@@ -1,0 +1,55 @@
+# Maintainer: visorjs <info@visorjs.com>
+pkgname=simdutf
+pkgver=9.0.0
+pkgrel=9
+pkgdesc="Unicode validation and transcoding at billions of characters per second"
+url="https://simdutf.github.io/simdutf/"
+arch="wasm64"
+license="Apache-2.0 OR MIT"
+depends="musl>=1.2.6-r28 libcxx"
+depends_dev="$pkgname=$pkgver-r$pkgrel"
+# aports ships no simdutf-static: it has no consumer that links statically.
+# nodejs here is one, so the archive is content this build produces and the
+# subpackage set covers it, per the recipe contract.
+subpackages="$pkgname-static $pkgname-dev $pkgname-doc"
+options="!check !strip !archcheck"
+source="https://github.com/simdutf/simdutf/archive/v$pkgver/simdutf-$pkgver.tar.gz
+	"
+
+# cmake/samurai baked into the toolchain image; the loongarch64 clang/lasx
+# case and crossopts are dropped: abuild maps no CHOST for CARCH=wasm64.
+# SIMDUTF_TESTS is off: default on upstream, but tests/helpers/test.cpp
+# and random_fuzzer.cpp use throw/try/std::random_device, none of which
+# this platform's no-exceptions libc++abi or wasm64 libc provide.
+# SIMDUTF_TOOLS is off, dropping fastbase64/sutf with it: both tools use
+# throw/try unconditionally, with no upstream switch to disable it.
+build() {
+	local d shared
+	for d in build-static:OFF build:ON; do
+		shared=${d#*:}
+		cmake -B "${d%:*}" -G Ninja \
+			-DCMAKE_TOOLCHAIN_FILE=/usr/local/share/reactor/cmake/wasm64-reactor.cmake \
+			-DCMAKE_INSTALL_PREFIX=/usr \
+			-DCMAKE_INSTALL_LIBDIR=lib \
+			-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+			-DBUILD_SHARED_LIBS=$shared \
+			-DCMAKE_BUILD_TYPE=Release \
+			-DSIMDUTF_CXX_STANDARD=20 \
+			-DSIMDUTF_TESTS=OFF \
+			-DSIMDUTF_TOOLS=OFF
+		cmake --build "${d%:*}"
+	done
+}
+
+package() {
+	# Static first, so the shared pass owns the cmake/pkgconfig files the
+	# -dev package ships beside libsimdutf.so.
+	DESTDIR="$pkgdir" cmake --install build-static
+	DESTDIR="$pkgdir" cmake --install build
+
+	install -Dm644 LICENSE-MIT -t "$pkgdir"/usr/share/licenses/$pkgname/
+}
+
+sha512sums="
+0c74226247cbe95368efa87ab84f5217485f16bcdf7a9def8741c6086cb86e6c378f0c437030d2be0934726e3ea9c28b5df2e593d0c654c78291c455a8d1e103  simdutf-9.0.0.tar.gz
+"

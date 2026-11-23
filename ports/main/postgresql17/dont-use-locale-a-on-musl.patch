@@ -1,0 +1,11 @@
+--- a/src/backend/commands/collationcmds.c
++++ b/src/backend/commands/collationcmds.c
+@@ -579,7 +579,7 @@
+ 
+ 
+ /* will we use "locale -a" in pg_import_system_collations? */
+-#if !defined(WIN32)
++#if !defined(WIN32) && defined(__GLIBC__)
+ #define READ_LOCALE_A_OUTPUT
+ #endif
+ 

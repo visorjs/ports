@@ -1,0 +1,46 @@
+An addon may register an after-work callback that takes only the request, cast
+to uv_after_work_cb. A native call ignores the extra status argument; wasm
+call_indirect traps on the mismatched signature. uv__queue_done asks the
+kernel's vDSO for the funcref's arity (__visorjs_vdso_fp_type, the dispatch
+libc's own callback sites use) and calls a one-parameter callback with the
+request alone.
+
+--- a/deps/uv/src/threadpool.c
++++ b/deps/uv/src/threadpool.c
+@@ -403,6 +403,13 @@
+ }
+ 
+ 
++#if defined(__wasm__)
++/* The funcref's packed (results << 16) | params, from the kernel's vDSO:
++ * counts only, so a returned value is assumed to be an i32. */
++extern int __visorjs_vdso_fp_type(int fp_idx);
++#endif
++
++
+ static void uv__queue_done(struct uv__work* w, int err) {
+   uv_work_t* req;
+ 
+@@ -412,6 +419,22 @@
+   if (req->after_work_cb == NULL)
+     return;
+ 
++#if defined(__wasm__)
++  /* call_indirect traps where a native call ignores the extra argument: an
++   * after-work callback cast from one taking only the request gets only it,
++   * and a result it returns is discarded. */
++  {
++    int type = __visorjs_vdso_fp_type((int) (intptr_t) req->after_work_cb);
++    if (type >= 0 && (type & 0xffff) == 1) {
++      if ((type >> 16) == 0)
++        ((void (*)(uv_work_t*)) req->after_work_cb)(req);
++      else
++        (void) ((int (*)(uv_work_t*)) req->after_work_cb)(req);
++      return;
++    }
++  }
++#endif
++
+   req->after_work_cb(req, err);
+ }
+ 

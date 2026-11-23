@@ -1,0 +1,58 @@
+# Maintainer: visorjs <info@visorjs.com>
+pkgname=libpsl
+pkgver=0.21.5
+pkgrel=8
+pkgdesc="C library for the Public Suffix List"
+url="https://rockdaboot.github.io/libpsl"
+arch="wasm64"
+license="MIT"
+depends="musl>=1.2.6-r28 libidn2 libunistring"
+depends_dev="$pkgname-utils=$pkgver-r$pkgrel $pkgname=$pkgver-r$pkgrel libidn2-dev"
+subpackages="$pkgname-static $pkgname-utils $pkgname-dev $pkgname-doc"
+options="!check !strip !archcheck"
+source="https://github.com/rockdaboot/libpsl/releases/download/$pkgver/libpsl-$pkgver.tar.gz"
+
+_stage_deps() {
+	local deps="$srcdir/deps-staged"
+	apk add --root "$deps" --initdb --no-scripts --no-chown \
+		--arch "$CARCH" --keys-dir "${VISORJS_APK_KEYS:-/work/ports/keys}" \
+		--repository "$REPODEST/main" \
+		musl libidn2 libidn2-dev libunistring libunistring-dev pkgconf \
+		|| die "staging the dependency root failed"
+
+	export CFLAGS="$CFLAGS -I$deps/usr/include"
+	export CPPFLAGS="$CPPFLAGS -I$deps/usr/include"
+	export LDFLAGS="$LDFLAGS -L$deps/usr/lib"
+	export PKG_CONFIG_PATH="$deps/usr/lib/pkgconfig:$deps/usr/share/pkgconfig"
+	export PKG_CONFIG_LIBDIR="$deps/usr/lib/pkgconfig:$deps/usr/share/pkgconfig"
+}
+
+build() {
+	_stage_deps
+
+	meson setup \
+		--cross-file /usr/local/share/reactor/meson/wasm64-reactor.ini \
+		--prefix=/usr --libdir=/usr/lib --buildtype=plain \
+		--wrap-mode=nodownload --default-library=both \
+		-Db_ndebug=true \
+		-Db_lto=false \
+		-Druntime=libidn2 \
+		-Dbuiltin=true \
+		. output
+	meson compile -C output
+}
+
+package() {
+	DESTDIR="$pkgdir" meson install --no-rebuild -C output
+}
+
+utils() {
+	pkgdesc="$pkgdesc (utils)"
+	depends="libpsl musl>=1.2.6-r28"
+
+	amove usr/bin
+}
+
+sha512sums="
+c14d575cecc0f1693894dd79565b6b9220084ddfa43b908a1cefe16d147cdd5ec47796eb0c2135e2f829a951abaf39d8a371ab5c1352f57b36e610e25adf91f5  libpsl-0.21.5.tar.gz
+"

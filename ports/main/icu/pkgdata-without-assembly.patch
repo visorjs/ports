@@ -1,0 +1,16 @@
+With no assembly type configured, pkgdata falls back to writing an object
+file itself, and its writer has no wasm backend ("match-arch file oma.obj
+is not an ELF object file"). -w is upstream's own switch for that case: it
+emits C, which the target compiler then compiles.
+
+--- a/extra/uconv/Makefile.in
++++ b/extra/uconv/Makefile.in
+@@ -49,7 +49,7 @@
+ CLEANFILES = *~ $(DEPS) $(MSGNAME)/*.res $(MSGNAME)/*.lst $(MSGNAME)/*.c $(MSGNAME)/*.o $(MSGNAME)/*.$(SO) $(MSGNAME)/*.a
+
+ ifeq ($(PKGDATA_OPTS),)
+-PKGDATA_OPTS = -O pkgdata.inc
++PKGDATA_OPTS = -O pkgdata.inc -w
+ endif
+
+ ## Target information

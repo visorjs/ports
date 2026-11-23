@@ -1,0 +1,56 @@
+# Maintainer: visorjs <info@visorjs.com>
+pkgname=ada
+pkgver=3.3.0
+pkgrel=8
+pkgdesc="WHATWG-compliant and fast URL parser written in modern C++"
+url="https://ada-url.github.io/ada"
+arch="wasm64"
+license="( Apache-2.0 OR MIT ) AND MPL-2.0"
+depends="$pkgname-libs musl"
+depends_dev="$pkgname=$pkgver-r$pkgrel"
+subpackages="$pkgname-static $pkgname-dev $pkgname-libs"
+options="!check !strip !archcheck"
+source="https://github.com/ada-url/ada/archive/v$pkgver/ada-$pkgver.tar.gz
+	use-any-simdjson-version.patch
+	"
+
+# cmake/samurai baked into the toolchain image; crossopts is dropped
+# because abuild maps no CHOST for CARCH=wasm64, so it equals CBUILD.
+# ADA_TOOLS is off: tools/cli fetches cxxopts and fmt over the network via
+# CPM, and no cxxopts-dev/fmt-dev port exists on this platform, so the
+# tools subpackage is dropped with it (nothing left to amove).
+build() {
+	local shared; for shared in OFF ON; do
+		cmake -B build -G Ninja -Wno-dev \
+			-DCMAKE_TOOLCHAIN_FILE=/usr/local/share/reactor/cmake/wasm64-reactor.cmake \
+			-DCMAKE_BUILD_TYPE=MinSizeRel \
+			-DCMAKE_INSTALL_PREFIX=/usr \
+			-DCMAKE_INSTALL_LIBDIR=lib \
+			-DCMAKE_VERBOSE_MAKEFILE=ON \
+			-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+			-DBUILD_SHARED_LIBS=$shared \
+			-DCPM_LOCAL_PACKAGES_ONLY=ON \
+			-DADA_TESTING="$(want_check && echo ON || echo OFF)" \
+			-DADA_BENCHMARKS=OFF \
+			-DADA_TOOLS=OFF \
+			-DADA_USE_SIMDUTF=OFF
+		cmake --build build
+	done
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+
+	install -m644 build/src/libada.a -t "$pkgdir"/usr/lib/
+}
+
+libs() {
+	pkgdesc="$pkgdesc (libraries)"
+	depends="musl>=1.2.6-r28 libcxx"
+	amove usr/lib/libada.so.*
+}
+
+sha512sums="
+728bf278fcac51a8ffdf5571cb486e789cd49511674c61e354c802bbfaeea64598fb22cd28ef4b02eacdd42c1c3437f40666ca8dba8097e0ecebbae1095de77f  ada-3.3.0.tar.gz
+fe62c9a1e79be553ef40c59f74aba8f226464cd138efe83fb6a23b553bea9a2a4a9d64ed2d63988673d72de379634b16f1e2bb182d7eceaee3f8a4947902d5b0  use-any-simdjson-version.patch
+"

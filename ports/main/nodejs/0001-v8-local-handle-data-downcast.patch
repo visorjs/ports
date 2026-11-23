@@ -1,0 +1,13 @@
+# neuter the debug-only checked downcast so Local<Data>.As<ValueSubtype>() compiles under V8_ENABLE_CHECKS
+diff --git a/deps/v8/include/v8-local-handle.h b/deps/v8/include/v8-local-handle.h
+index dce757465c2..620818c0404 100644
+--- a/deps/v8/include/v8-local-handle.h
++++ b/deps/v8/include/v8-local-handle.h
+@@ -326,7 +326,6 @@ class V8_TRIVIAL_ABI Local : public LocalBase<T>,
+     // If we're going to perform the type check then we have to check
+     // that the handle isn't empty before doing the checked cast.
+     if (that.IsEmpty()) return Local<T>();
+-    T::Cast(that.template value<S>());
+ #endif
+     return Local<T>(LocalBase<T>(that));
+   }

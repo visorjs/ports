@@ -1,0 +1,81 @@
+# Maintainer: visorjs <info@visorjs.com>
+pkgname=brotli
+pkgver=1.2.0
+# r1: rebuilt against a toolchain that restates the reactor codegen passes for
+# the LTO backend. With -flto=auto codegen runs in wasm-ld, which was adding
+# none of them, so the shipped libraries carried no MMU translation at all.
+pkgrel=9
+pkgdesc="Generic lossless compressor"
+url="https://github.com/google/brotli"
+arch="wasm64"
+license="MIT"
+depends="brotli-libs musl>=1.2.6-r28"
+depends_dev="$pkgname=$pkgver-r$pkgrel"
+subpackages="$pkgname-doc $pkgname-static $pkgname-dev $pkgname-libs"
+options="!check !strip !archcheck"
+source="brotli-$pkgver.tar.gz::https://github.com/google/brotli/archive/refs/tags/v$pkgver.tar.gz
+	optimize-mips.patch
+	fix-lp64.patch
+	"
+builddir="$srcdir/brotli-$pkgver"
+
+# py3-brotli is dropped: no wasm64 CPython exists to build it against,
+# which is why aports gates it behind BOOTSTRAP too.
+# HAVE_LIB_M / BROTLI_EMSCRIPTEN are preset because the toolchain file's
+# STATIC_LIBRARY probes never link, so both would answer "yes" blindly.
+# CMAKE_BUILD_WITH_INSTALL_RPATH skips the install-time RPATH relink;
+# wasm has no RPATH.
+prepare() {
+	default_prepare
+	sed -i 's,/usr/bin/env bash,/bin/sh,' tests/*.sh
+}
+
+build() {
+	export CFLAGS="$CFLAGS -flto=auto -O2"
+
+	# static libs, see https://github.com/google/brotli/issues/795
+	cmake -B build -G Ninja \
+		-DCMAKE_TOOLCHAIN_FILE=/usr/local/share/reactor/cmake/wasm64-reactor.cmake \
+		-DCMAKE_BUILD_TYPE=None \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+		-DHAVE_LIB_M=0 \
+		-DBROTLI_EMSCRIPTEN=0 \
+		-DBUILD_SHARED_LIBS=OFF
+	cmake --build build
+
+	cmake -B build -G Ninja \
+		-DCMAKE_TOOLCHAIN_FILE=/usr/local/share/reactor/cmake/wasm64-reactor.cmake \
+		-DCMAKE_BUILD_TYPE=None \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+		-DHAVE_LIB_M=0 \
+		-DBROTLI_EMSCRIPTEN=0 \
+		-DBUILD_SHARED_LIBS=ON
+	cmake --build build
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+
+	local file; for file in common dec enc; do
+		install -D -m 755 "$builddir"/build/libbrotli$file.a \
+			"$pkgdir"/usr/lib/
+	done
+
+	local man; for man in docs/*.?; do
+		install -D -m644 $man "$pkgdir"/usr/share/man/man${man##*.}/${man##*/}
+	done
+}
+
+libs() {
+	pkgdesc="$pkgdesc (libraries)"
+	depends="musl>=1.2.6-r28"
+	amove usr/lib/libbrotli*.so.*
+}
+
+sha512sums="
+f94542afd2ecd96cc41fd21a805a3da314281ae558c10650f3e6d9ca732b8425bba8fde312823f0a564c7de3993bdaab5b43378edab65ebb798cefb6fd702256  brotli-1.2.0.tar.gz
+73b1fc67d7680d9841d90be020d224b158bab047e0641d129ce3f9cafe0d39a375b803ace3b3e0e0dc94b982dc566367b2c1407c120edaa32ab8f3bdf83740d7  optimize-mips.patch
+6fa19d521a50ba473be2b2cd6b13c3f9b9b988420b51a515823bd61db1b5142b51d2043c394feb815ba3ddab6e6cdc7b9c49acfe6efab59a58714cf29532fe6d  fix-lp64.patch
+"

@@ -1,0 +1,31 @@
+absl derives ABSL_HAVE_MMAP from a platform list, and refuses to take the
+macro from the command line (`#error ABSL_HAVE_MMAP cannot be directly set`).
+The list names __EMSCRIPTEN__ and __asmjs__ but not bare __wasm__, which is
+correct upstream -- a bare wasm target has no OS underneath it. Here it does:
+this is a musl userland over a kernel that serves mmap/munmap, and the absl
+target must additionally build with -U__linux__ so gyp's own libuv source
+selection and absl's arch probes can disagree.
+
+Without the macro, low_level_alloc.h sets ABSL_LOW_LEVEL_ALLOC_MISSING, whose
+#ifndef swallows the whole of low_level_alloc.cc, graphcycles.cc,
+create_thread_identity.cc and per_thread_sem.cc. mutex.cc has no matching
+guard and calls into all four regardless, so each became an unresolved import
+with a trap-on-call stub and the first absl::Mutex that had to block would
+have killed the process.
+
+The DirectMmap path this macro can otherwise select stays unreachable:
+low_level_alloc.h defines ABSL_LOW_LEVEL_ALLOC_ASYNC_SIGNAL_SAFE_MISSING for
+__wasm__, so the arena allocates through plain mmap/munmap.
+
+--- a/deps/v8/third_party/abseil-cpp/absl/base/config.h
++++ b/deps/v8/third_party/abseil-cpp/absl/base/config.h
+@@ -378,7 +378,8 @@
+     defined(__asmjs__) || defined(__EMSCRIPTEN__) || defined(__Fuchsia__) || \
+     defined(__sun) || defined(__myriad2__) || defined(__HAIKU__) ||          \
+     defined(__OpenBSD__) || defined(__NetBSD__) || defined(__QNX__) ||       \
+-    defined(__VXWORKS__) || defined(__hexagon__) || defined(__XTENSA__)
++    defined(__VXWORKS__) || defined(__hexagon__) || defined(__XTENSA__) ||   \
++    defined(__wasm__)
+ #define ABSL_HAVE_MMAP 1
+ #endif
+ 

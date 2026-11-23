@@ -1,0 +1,118 @@
+Put back what node's scopes count when their frames end without destructors.
+
+A visorjs guest is built without exceptions. When the host engine runs out
+of stack under node's C++ (entered from JavaScript at the stack limit), its
+exception unwinds those frames and no destructor runs. An
+InternalCallbackScope dropped that way leaves the callback scope depth and
+the async id stack one entry up for good: the next callback scope to close
+does not run the tick queue, and the process ends with "async hook stack
+has become corrupted". A ShouldNotAbortOnUncaughtScope leaves its counter
+up.
+
+The shim marks its own counts at each entry the host makes into the guest
+and restores them when an entry is unwound (<visorjs-unwind.h>). The
+environment registers its three counts there: the callback scope depth, the
+should-not-abort scopes, and the async id stack's length, which is popped
+back as the dropped scopes' pop_async_context calls would have.
+
+V8 has no such case: its API runs under headroom below the JavaScript
+stack limit, so the overflow is thrown in JavaScript before the C++ runs.
+
+--- a/src/env.cc
++++ b/src/env.cc
+@@ -24,6 +24,7 @@
+ #include "v8-cppgc.h"
+ #include "v8-profiler.h"
+ #include "v8-sandbox.h"  // v8::Object::Wrap(), v8::Object::Unwrap()
++#include "visorjs-unwind.h"
+ 
+ #include <algorithm>
+ #include <atomic>
+@@ -194,6 +195,21 @@
+   return fields_[kStackLength] > 0;
+ }
+ 
++void AsyncHooks::VisorjsUnwindStack(uint32_t length) {
++  while (fields_[kStackLength] > length) {
++    uint32_t offset = fields_[kStackLength] - 1;
++    async_id_fields_[kExecutionAsyncId] = async_ids_stack_[2 * offset];
++    async_id_fields_[kTriggerAsyncId] = async_ids_stack_[2 * offset + 1];
++    fields_[kStackLength] = offset;
++  }
++  // The JavaScript side's resources are its own frames' to pop: those
++  // unwind as JavaScript does, through their finally blocks. Nothing here
++  // calls the engine, so this runs with whatever stack is left.
++  if (native_execution_async_resources_.size() > length) {
++    native_execution_async_resources_.resize(length);
++  }
++}
++
+ void AsyncHooks::clear_async_id_stack() {
+   if (!js_execution_async_resources_.IsEmpty() && env()->can_call_into_js()) {
+     Isolate* isolate = env()->isolate();
+@@ -987,9 +1003,40 @@
+     performance_state_->Mark(performance::NODE_PERFORMANCE_MILESTONE_V8_START,
+                             performance::performance_v8_start);
+   }
++
++  // A frame the host's stack overflow drops runs no destructor: the shim
++  // marks these counts at each entry into the guest and puts them back
++  // when one is unwound.
++  visorjs::AddUnwindState(
++      isolate(),
++      [](void* env) {
++        return static_cast<Environment*>(env)->VisorjsUnwindMark();
++      },
++      [](void* env, uint64_t mark) {
++        static_cast<Environment*>(env)->VisorjsUnwindRestore(mark);
++      },
++      this);
+ }
+ 
++// The three counts, packed: the async id stack's length in the low word,
++// then 16 bits each for the callback scope depth and the should-not-abort
++// scopes.
++uint64_t Environment::VisorjsUnwindMark() {
++  const uint32_t stack = async_hooks_.fields()[AsyncHooks::kStackLength];
++  return static_cast<uint64_t>(stack) |
++         (static_cast<uint64_t>(async_callback_scope_depth_ & 0xffff) << 32) |
++         (static_cast<uint64_t>(should_not_abort_scope_counter_ & 0xffff)
++          << 48);
++}
++
++void Environment::VisorjsUnwindRestore(uint64_t mark) {
++  async_callback_scope_depth_ = static_cast<size_t>((mark >> 32) & 0xffff);
++  should_not_abort_scope_counter_ = static_cast<int>((mark >> 48) & 0xffff);
++  async_hooks_.VisorjsUnwindStack(static_cast<uint32_t>(mark));
++}
++
+ Environment::~Environment() {
++  visorjs::RemoveUnwindState(isolate(), this);
+   HandleScope handle_scope(isolate());
+   Local<Context> ctx = context();
+ 
+--- a/src/env.h
++++ b/src/env.h
+@@ -331,6 +331,9 @@
+                           v8::Local<v8::Object>* execution_async_resource);
+   bool pop_async_context(double async_id);
+   void clear_async_id_stack();  // Used in fatal exceptions.
++  // visorjs: pops the stack to `length` entries, as the pop_async_context
++  // calls of scopes that ended without their destructors would have.
++  void VisorjsUnwindStack(uint32_t length);
+ 
+   AsyncHooks(const AsyncHooks&) = delete;
+   AsyncHooks& operator=(const AsyncHooks&) = delete;
+@@ -952,6 +955,12 @@
+   inline void PopShouldNotAbortOnUncaughtScope();
+   inline bool inside_should_not_abort_on_uncaught_scope() const;
+ 
++  // visorjs: what this environment's scopes keep counted (the callback
++  // scope depth, the should-not-abort scopes, the async id stack), for
++  // <visorjs-unwind.h>.
++  uint64_t VisorjsUnwindMark();
++  void VisorjsUnwindRestore(uint64_t mark);
++
+   static inline Environment* ForAsyncHooks(AsyncHooks* hooks);
+ 
+   v8::Local<v8::Value> GetNow();

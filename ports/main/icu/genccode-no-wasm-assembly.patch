@@ -1,0 +1,27 @@
+genccode's `-a gcc` output is ELF assembly (.section/.type/%progbits), which
+no wasm assembler accepts; leaving GENCCODE_ASSEMBLY empty for a wasm host
+makes genccode emit its C fallback instead. configure is patched alongside
+configure.ac so the build needs no autoreconf.
+
+--- a/configure.ac
++++ b/configure.ac
+@@ -613,6 +613,8 @@
+ # Check to see if genccode can generate simple assembly.
+ GENCCODE_ASSEMBLY=
+ case "${host}" in
++wasm*-*)
++    ;;
+ *-linux*|*-kfreebsd*-gnu*|i*86-*-*bsd*|i*86-pc-gnu)
+     if test "$GCC" = yes; then
+         # We're using gcc, and the simple -a gcc command line works for genccode
+--- a/configure
++++ b/configure
+@@ -7008,6 +7008,8 @@
+ # Check to see if genccode can generate simple assembly.
+ GENCCODE_ASSEMBLY=
+ case "${host}" in
++wasm*-*)
++    ;;
+ *-linux*|*-kfreebsd*-gnu*|i*86-*-*bsd*|i*86-pc-gnu)
+     if test "$GCC" = yes; then
+         # We're using gcc, and the simple -a gcc command line works for genccode

@@ -1,0 +1,29 @@
+{
+  "project": "pnpm",
+  "package": "pnpm",
+  "description": "pnpm 12: the npm package is a launcher, and install.js links the native executable of @pnpm/exe.linux-x64(-musl) over its pnpm bin. That executable is the Rust crate pnpm-cli, bin pnpm, built from the pnpm/pnpm tag v<version>, which the npm provenance attestations of pnpm and of both exe packages name. Upstream's own release build: --release --locked -p pnpm-cli --bin pnpm, no features, after its install-crates step's pnpm install --frozen-lockfile --filter @pnpm/esm-loader, whose prepare script generates the cas-loader.mjs.inc that deps-restorer includes (pnpmInstall; the crates half of that step is the vendor step). The tree pins Rust 1.97.0 and one crate in the graph (tree-sitter-iter) declares rust-version 1.97; the toolchain image carries 1.96.0, on which it compiles, so the build passes --ignore-rust-version until the image moves to 1.97. Versions: pnpm 11 and older are JavaScript with no native executable (no optionalDependencies), so there is nothing to substitute below 12.0.0 (min).",
+  "source": {
+    "route": "git",
+    "url": "https://github.com/pnpm/pnpm.git",
+    "tag": "v{version}",
+    "provenance": "attestation"
+  },
+  "build": {
+    "kind": "cargo",
+    "crate": "pnpm-cli",
+    "bin": "pnpm",
+    "ignoreRustVersion": true,
+    "pnpmInstall": ["@pnpm/esm-loader"],
+    "pnpmGenerates": ["pnpm/crates/deps-restorer/src/cas-loader.mjs.inc"]
+  },
+  "upstream": [
+    { "package": "@pnpm/exe.linux-x64", "path": "pnpm" },
+    { "package": "@pnpm/exe.linux-x64-musl", "path": "pnpm" }
+  ],
+  "parity": {
+    "commands": [["--version"], ["--help"]]
+  },
+  "versions": {
+    "min": "12.0.0"
+  }
+}

@@ -1,0 +1,1060 @@
+# Maintainer: visorjs <info@visorjs.com>
+pkgname=nodejs
+# Note: Update only to LTS versions! Other versions are supported only for
+#  9 months by upstream.
+pkgver=24.18.1
+pkgrel=172
+pkgdesc="JavaScript runtime built on V8 engine - LTS version"
+# Inert on the release path: DEV_BUILD is set only by ports/dev.sh, so with it
+# unset this expands to nothing and the release apk's metadata is unchanged.
+pkgdesc="$pkgdesc${DEV_BUILD:+ [DEV INCREMENTAL BUILD]}"
+url="https://nodejs.org/"
+arch="wasm64"
+license="MIT"
+# aports' ca-certificates, and --openssl-use-def-ca-store with it: this
+# platform has no system trust store yet, so node uses its bundled roots.
+# The v8 device class is declared OPTIONAL at the link (see build()): the
+# shim is built without SpiderMonkey, so the host engine behind that class
+# is the only engine this binary has, and a boot serving no v8 device gets
+# one line saying so and exit 1 rather than a loader refusal. No grant is
+# listed here, and `depends="visor-device-v8=2"` would be wrong: the boot
+# registry is the only source of a grant, so the solver would refuse
+# `apk add nodejs` outright on a boot that registers none.
+# What is named below is what the binary still reaches for at runtime,
+# with the musl floor tracedeps cannot add:
+# aports' unbundled shared-library set is gone because this build links
+# those libraries from their -static subpackages (see _stage_deps), leaving
+# libc and the C++ runtime as the only NEEDED entries; icu-data stays
+# because --with-icu-default-data-dir reads the .dat off the filesystem.
+#
+# icu-data-full, not the icu-data virtual: apk resolves that virtual to
+# icu-data-en on provider_priority, and English-only data would let the
+# engine's ECMA-402 claim locales it cannot actually format -- the same
+# "advertise what you do not have" bug that no Intl at all was.
+depends="musl>=1.2.6-r28 libcxx icu-data-full v8-shim"
+# The -dev package's tie back to the main one, named as the siblings do.
+depends_dev="$pkgname=$pkgver-r$pkgrel"
+# Host tools only: the wasm64 headers arrive from the sibling .apks
+# (_stage_deps), and the sysroot carries its own linux/* headers, so aports'
+# matching -dev set and linux-headers have no counterpart. samurai is out
+# because the image's own ninja conflicts with it over cmd:ninja.
+makedepends="python3 py3-jinja2 linux-headers"
+install="$pkgname.post-upgrade"
+# aports' $pkgname-libs and nodejs.pc are absent: this build links no
+# libnode.so, and addons bind to the executable as on Linux.
+subpackages="
+	$pkgname-dev
+	$pkgname-doc
+	"
+provider_priority=100  # highest priority (other provider is nodejs-current)
+provides="nodejs-lts=$pkgver-r$pkgrel"  # for backward compatibility
+replaces="nodejs-current nodejs-lts"  # nodejs-lts for backward compatibility
+options="!check !strip !archcheck"
+source="https://nodejs.org/dist/v$pkgver/node-v$pkgver.tar.gz
+	remove-unused-openssl-config.patch
+	v8-ppc64le-compat.patch
+	v8-riscv-trap-handler.patch
+	v8-no-static-zlib.patch
+	v8-disable-trap-handler-on-riscv-sv39.patch
+	v8-int64-lowering-reducer.patch
+	v8-ppc_vsx-inl.patch
+	node_sea.patch
+	node_snapshotable.patch
+	0001-v8-local-handle-data-downcast.patch
+	0002-inspector-stub-register-func-signature.patch
+	v8-use-visor-shim.patch
+	node-gyp-no-latomic.patch
+	node-gyp-no-text-start.patch
+	node-gyp-js2c-host-deps.patch
+	configure-shared-libs-target-only.patch
+	abseil-gyp-drop-unbuildable-sources.patch
+	abseil-config-wasm-has-mmap.patch
+	uv-gyp-no-x86-cpu-relax.patch
+	uv-visorjs-spawn-primitive.patch
+	uv-guest-time-census.patch
+	uv-visorjs-fs-inline.patch
+	node-guest-time-census.patch
+	node-visorjs-microtask-drain-in-callback-scope.patch
+	uv-visorjs-poll-yield.patch
+	node-visorjs-arena-accounting.patch
+	common-gypi-wasm64-addons.patch
+	node-api-headers-emscripten-only.patch
+	node-visorjs-addon-register-trampoline.patch
+	uv-visorjs-after-work-arity.patch
+	node-visorjs-unwind-state.patch
+	node-visorjs-wasm-dead-imports.patch
+	"
+builddir="$srcdir/node-v$pkgver"
+
+# secfixes:
+#   24.18.1-r0:
+#     - CVE-2026-56846
+#     - CVE-2026-56848
+#     - CVE-2026-58043
+#     - CVE-2026-56850
+#     - CVE-2026-58040
+#     - CVE-2026-58041
+#     - CVE-2026-58042
+#     - CVE-2026-58045
+#     - CVE-2026-56847
+#     - CVE-2026-58039
+#     - CVE-2026-58044
+#   24.17.0-r0:
+#     - CVE-2026-48618
+#     - CVE-2026-48933
+#     - CVE-2026-48615
+#     - CVE-2026-48619
+#     - CVE-2026-48928
+#     - CVE-2026-48930
+#     - CVE-2026-48934
+#     - CVE-2026-48937
+#     - CVE-2026-48617
+#     - CVE-2026-48931
+#     - CVE-2026-48935
+#   24.14.1-r0:
+#     - CVE-2026-21637
+#     - CVE-2026-21710
+#     - CVE-2026-21712
+#     - CVE-2026-21713
+#     - CVE-2026-21714
+#     - CVE-2026-21715
+#     - CVE-2026-21716
+#     - CVE-2026-21717
+#   24.13.0-r0:
+#     - CVE-2025-55132
+#     - CVE-2025-55130
+#     - CVE-2025-59466
+#     - CVE-2025-55131
+#   22.16.0-r0:
+#     - CVE-2025-23166
+#   22.13.1-r0:
+#     - CVE-2025-23083
+#     - CVE-2025-23084
+#     - CVE-2025-23085
+#     - CVE-2025-22150
+#   20.15.1-r0:
+#     - CVE-2024-22018
+#     - CVE-2024-22020
+#     - CVE-2024-36137
+#   20.12.1-r0:
+#     - CVE-2024-27982
+#     - CVE-2024-27983
+#   18.18.2-r0:
+#     - CVE-2023-45143
+#     - CVE-2023-38552
+#     - CVE-2023-39333
+#   18.17.1-r0:
+#     - CVE-2023-32002
+#     - CVE-2023-32006
+#     - CVE-2023-32559
+#   18.14.1-r0:
+#     - CVE-2023-23918
+#     - CVE-2023-23919
+#     - CVE-2023-23920
+#     - CVE-2023-23936
+#     - CVE-2023-24807
+#   18.12.1-r0:
+#     - CVE-2022-3602
+#     - CVE-2022-3786
+#     - CVE-2022-43548
+#   16.17.1-r0:
+#     - CVE-2022-32213
+#     - CVE-2022-32214
+#     - CVE-2022-32215
+#     - CVE-2022-35255
+#     - CVE-2022-35256
+#   16.13.2-r0:
+#     - CVE-2021-44531
+#     - CVE-2021-44532
+#     - CVE-2021-44533
+#     - CVE-2022-21824
+#   14.18.1-r0:
+#     - CVE-2021-22959
+#     - CVE-2021-22960
+#   14.17.6-r0:
+#     - CVE-2021-37701
+#     - CVE-2021-37712
+#     - CVE-2021-37713
+#     - CVE-2021-39134
+#     - CVE-2021-39135
+#   14.17.5-r0:
+#     - CVE-2021-3672
+#     - CVE-2021-22931
+#     - CVE-2021-22939
+#   14.17.4-r0:
+#     - CVE-2021-22930
+#   14.16.1-r0:
+#     - CVE-2020-7774
+#   14.16.0-r0:
+#     - CVE-2021-22883
+#     - CVE-2021-22884
+#   14.15.5-r0:
+#     - CVE-2021-21148
+#   14.15.4-r0:
+#     - CVE-2020-8265
+#     - CVE-2020-8287
+#   14.15.1-r0:
+#     - CVE-2020-8277
+#   12.18.4-r0:
+#     - CVE-2020-8201
+#     - CVE-2020-8252
+#   12.18.0-r0:
+#     - CVE-2020-8172
+#     - CVE-2020-11080
+#     - CVE-2020-8174
+#   12.15.0-r0:
+#     - CVE-2019-15606
+#     - CVE-2019-15605
+#     - CVE-2019-15604
+#   10.16.3-r0:
+#     - CVE-2019-9511
+#     - CVE-2019-9512
+#     - CVE-2019-9513
+#     - CVE-2019-9514
+#     - CVE-2019-9515
+#     - CVE-2019-9516
+#     - CVE-2019-9517
+#     - CVE-2019-9518
+#   10.15.3-r0:
+#     - CVE-2019-5737
+#   10.14.0-r0:
+#     - CVE-2018-12121
+#     - CVE-2018-12122
+#     - CVE-2018-12123
+#     - CVE-2018-0735
+#     - CVE-2018-0734
+#   8.11.4-r0:
+#     - CVE-2018-12115
+#   8.11.3-r0:
+#     - CVE-2018-7167
+#     - CVE-2018-7161
+#     - CVE-2018-1000168
+#   8.11.0-r0:
+#     - CVE-2018-7158
+#     - CVE-2018-7159
+#     - CVE-2018-7160
+#   8.9.3-r0:
+#     - CVE-2017-15896
+#     - CVE-2017-15897
+#   6.11.5-r0:
+#     - CVE-2017-14919
+#   6.11.1-r0:
+#     - CVE-2017-1000381
+#   0:
+#     - CVE-2021-43803
+#     - CVE-2022-32212
+#     - CVE-2023-44487
+#     - CVE-2024-36138
+#     - CVE-2024-37372
+
+# The V8 API this build compiles and links against is the shim in
+# packages/v8-shim, staged below out of the local repo as v8-shim-dev /
+# v8-shim-static. It stands where aports' static V8 stands and exists in no
+# tarball; deps/v8/include is replaced with its headers in build().
+
+prepare() {
+	default_prepare
+
+	# Remove bundled dependencies that we're not using.
+	#
+	# NOTE: nghttp3 and ngtcp2 are only used when building with OpenSSL
+	#  that supports QUIC. After the QUIC support is added to openssl, add
+	#  options --shared-nghttp3 and --shared-ngtcp2.
+	#
+	# NOTE: All bundled dependencies are described in
+	#  doc/contributing/maintaining/maintaining-dependencies.md.
+	rm -rf deps/ada \
+		deps/brotli \
+		deps/cares \
+		deps/corepack \
+		deps/nghttp2 \
+		deps/nghttp3 \
+		deps/ngtcp2 \
+		deps/openssl \
+		deps/simdjson \
+		deps/simdutf \
+		deps/sqlite \
+		deps/v8/third_party/jinja2 \
+		deps/zlib \
+		deps/zstd \
+		tools/inspector_protocol/jinja2
+}
+
+# aports gets its wasm64 headers and libraries from apk, and so does this:
+# a private root installed from the local signed repo, so the versions are
+# the index's rather than a second copy in this file.
+# --no-scripts: a post-install script is #!/bin/sh, and apk runs it chrooted
+# into a root that has no shell.
+#
+# Divergence from aports: the -static subpackages are staged and every
+# lib*.so* is then pruned, so each -l on the link line resolves to the
+# archive and node ends up mostly statically linked. aports links these
+# shared to share one copy across a system's binaries; here the only
+# consumer is node itself, and a shared object costs an instantiation, a
+# relocation pass and a NEEDED resolve on every single exec. The price is
+# aports' upgrade story: a CVE bump in one of these libraries means
+# rebuilding node too, which is the same pipeline that builds it anyway.
+_stage_deps() {
+	local deps="$srcdir/deps-staged"
+	local fresh=0
+	[ -d "$deps" ] || fresh=1
+	apk add --root "$deps" --initdb --no-scripts --no-chown \
+		--arch "$CARCH" --keys-dir "${VISORJS_APK_KEYS:-/work/ports/keys}" \
+		--repository "$REPODEST/main" \
+		openssl-dev zlib-dev zstd-dev brotli-dev c-ares-dev nghttp2-dev \
+		ada-dev simdjson-dev simdutf-dev icu-dev sqlite-dev v8-shim-dev \
+		openssl-libs-static zlib-static zstd-static brotli-static \
+		nghttp2-static ada-static simdjson-static simdutf-static \
+		icu-static sqlite-static v8-shim-static \
+		|| die "staging the dependency root failed"
+	# c-ares ships no -static: its libcares.a rides in c-ares-dev, as in
+	# aports, so it is already staged by the -dev above.
+	test -f "$deps/usr/lib/libcares.a" || die "no staged libcares.a"
+	# An apk carries its build's fixed mtimes, older than any object an
+	# incremental build already compiled: a freshly staged header must read
+	# as new, or a changed one (the shim's v8.h) recompiles nothing.
+	[ "$fresh" -eq 0 ] || find "$deps/usr/include" -type f -exec touch {} +
+	# No SpiderMonkey is staged: the shim is built without it, and its
+	# include/v8.h is self-contained. The Linux uapi headers below are
+	# arch-neutral enough to borrow from the container.
+	cp -r /usr/include/linux /usr/include/asm /usr/include/asm-generic "$deps"/usr/include/ 2>/dev/null || true
+	# The prune is what makes -lfoo pick libfoo.a: wasm-ld, like ld,
+	# prefers libfoo.so in the same -L directory. Runtime .so files arrive
+	# here as -dev dependencies, so removing them by hand is the only way
+	# to keep them off the link line.
+	rm -f "$deps"/usr/lib/lib*.so "$deps"/usr/lib/lib*.so.*
+	# aports reads this from icu-config, which the sibling icu-dev does not
+	# ship; the staged data directory is the same answer. `die` only names
+	# the failure; abuild's own `#!/bin/ash -e` already aborts on it.
+	local d
+	d=$(ls -d "$deps"/usr/share/icu/[0-9]*) || die "no staged icu data dir"
+	# Two staged icu versions would make ${d##*/} a two-line garbage value.
+	[ "$(echo "$d" | wc -l)" -eq 1 ] || die "several staged icu data dirs"
+	_icu_data_dir="/usr/share/icu/${d##*/}"
+}
+
+build() {
+	_stage_deps
+	rm -rf "$builddir"/deps/v8/include
+	mkdir -p "$builddir"/deps/v8/include
+	cp -r "$srcdir"/deps-staged/usr/include/* "$builddir"/deps/v8/include/ 2>/dev/null || true
+
+	# Add defines recommended in libuv readme.
+	local common_flags="-D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64"
+	# Disable use of OpenSSL ENGINE API - it's deprecated since OpenSSL 3.0
+	#   (https://issues.redhat.com/browse/RHEL-33743).
+	common_flags="$common_flags -DOPENSSL_NO_ENGINE"
+
+	# -D__i386__=1 is v8config.h's only reachable host-arch answer: its host
+	# block has no #if !V8_HOST_ARCH_* escape, so -DV8_HOST_ARCH_X64 is
+	# ignored and its #error fires anyway. -DV8_ENABLE_CHECKS routes the
+	# inline Is*() predicates to the shim's out-of-line symbols.
+	# -UV8_INTL_SUPPORT is V8's flag, not node's: node's i18n comes from
+	# --with-intl=system-icu below.
+	common_flags="$common_flags -D__i386__=1 -DV8_ENABLE_CHECKS=1 -D__wasm32__"
+	common_flags="$common_flags -UV8_COMPRESS_POINTERS -UV8_INTL_SUPPORT"
+	common_flags="$common_flags -UV8_31BIT_SMIS_ON_64BIT_ARCH -D__UCLIBC__"
+	# gyp picks deps/uv's linux sources from OS=="linux" and uv.h picks its
+	# loop layout from __linux__; without this the two disagree.
+	common_flags="$common_flags -D__linux__"
+	common_flags="$common_flags -I$srcdir/deps-staged/usr/include"
+	# Node makes several gyp warnings fatal, none of them written against
+	# this target. It silences abuild.conf's -Werror=format-security too.
+	common_flags="$common_flags -Wno-everything"
+
+	# -Os overwrites the optimizations enabled by BUILDTYPE=Release.
+	export CFLAGS="${CFLAGS/-Os} $common_flags"
+	export CXXFLAGS="${CXXFLAGS/-Os} $common_flags"
+	export CPPFLAGS="${CPPFLAGS/-Os} $common_flags"
+	# gyp composes the link line, so the entry shape and the device
+	# declaration reach the wrapper through LDFLAGS — target toolset only.
+	export LDFLAGS="$LDFLAGS --entry-shape=dynamic"
+	# The v8 shim imports js_v8_negotiate, so the class has to be declared
+	# or the loader refuses this binary. It stays OPTIONAL: negotiate
+	# answers -1 on a boot serving no v8 device, and the shim then reports
+	# the missing device in one line and exits 1. ABI 2 is what the host
+	# backend's descriptor serves; the loader compares the two for exact
+	# equality.
+	export LDFLAGS="$LDFLAGS --requires-device-optional=v8=2"
+	# The executable is linked against by nothing, and --export-all names
+	# every defined symbol: of node's exports, a few percent are
+	# referenceable by anything in the process. Every one of them costs an
+	# exports-object property per instance, a table slot per exported
+	# function and an iteration in each whole-namespace pass, six times per
+	# exec. The wrapper keeps the runtime's own names and both halves of
+	# the weak/data seams; the families below are what only this binary
+	# knows, and dropping any of them breaks silently and late.
+	#
+	# shim_ is the v8 device's guest-side callback surface, which the host
+	# resolves by string through invokeExport.
+	#
+	# The rest is the native-addon ABI. An addon is dlopen'd, so no link
+	# line records what it binds to; the families were derived by
+	# compiling the 117 addon fixtures under test/addons,
+	# test/js-native-api and test/node-api, taking the union of their
+	# undefined symbols, and subtracting everything a sibling .so already
+	# provides (the C++ runtime's __cxa_* come from libc++abi.so, malloc
+	# and friends from libc). What is left is 226 names in four families:
+	# napi_ and node_api_ (node-api), uv_ (libuv is static inside node,
+	# there is no libuv.so to resolve against), node_module_register, and
+	# the C++ API an addon compiled against node.h and v8.h calls into —
+	# the node:: and v8:: namespaces, which mangle as _ZN4node/_ZNK4node
+	# and _ZN2v8/_ZNK2v8.
+	LDFLAGS="$LDFLAGS --export-set=minimal --export-prefix=shim_"
+	LDFLAGS="$LDFLAGS --export-prefix=napi_ --export-prefix=node_api_"
+	LDFLAGS="$LDFLAGS --export-prefix=uv_ --export-extra=node_module_register"
+	LDFLAGS="$LDFLAGS --export-prefix=_ZN2v8 --export-prefix=_ZNK2v8"
+	# node:: is not a prefix keep. `--export-prefix=_ZN4node` would hold
+	# 6,411 exports — node's entire internal namespace, node::crypto:: alone
+	# being 1,306 — to protect a published surface of 340. The addon ABI is
+	# what the public headers declare (NODE_EXTERN is
+	# __attribute__((visibility("default")))), so the keep is entity-scoped:
+	# each name below is a class, namespace member or free function declared
+	# in node.h, node_buffer.h, node_object_wrap.h or node_api.h, and Itanium
+	# mangling makes `_ZN4node<len><name>` an exact prefix for all of its
+	# symbols. Re-derive after a version bump by demangling the binary's
+	# node:: exports and keeping those whose first component after `node::`
+	# is a class, namespace or function one of those four headers declares.
+	local _e _m _p
+	for _e in AddEnvironmentCleanupHook AddEnvironmentCleanupHookInternal \
+		AddLinkedBinding AllocateEnvironmentThreadId \
+		AllowWasmCodeGenerationCallback ArrayBufferAllocator \
+		AsyncHooksGetExecutionAsyncId AsyncHooksGetTriggerAsyncId \
+		AsyncResource AtExit Buffer CallbackScope CommonEnvironmentSetup \
+		CreateArrayBufferAllocator CreateEnvironment CreateIsolateData \
+		CreatePlatform DecodeBytes DecodeWrite DefaultProcessExitHandler \
+		DeleteACHHandle EmbedderSnapshotData EmitAsyncDestroy EmitAsyncInit \
+		EmitBeforeExit EmitExit EmitProcessBeforeExit EmitProcessExit \
+		Encode Environment ErrnoException FatalException \
+		FreeArrayBufferAllocator FreeEnvironment FreeIsolateData \
+		FreePlatform GetAnonymousMainPath GetArrayBufferAllocator \
+		GetCurrentEnvironment GetCurrentEventLoop GetEnvironmentIsolateData \
+		GetInspectorParentHandle GetMainContext GetMultiIsolatePlatform \
+		GetNodeReport GetTracingController InitializationResultImpl \
+		InitializeContext InitializeNodeWithArgs InitializeOncePerProcess \
+		InternalCallbackScope IsolateData LoadEnvironment MakeCallback \
+		ModuleData MultiIsolatePlatform NewContext NewIsolate \
+		NodeArrayBufferAllocator ObjectWrap OnFatalError ParseEncoding \
+		PrepareStackTraceCallback ProcessGlobalArgs PromiseRejectCallback \
+		RegisterContext RegisterSignalHandler RemoveEnvironmentCleanupHook \
+		RemoveEnvironmentCleanupHookInternal RequestInterrupt RunAtExit \
+		SetCppgcReference SetIsolateUpForNode SetProcessExitHandler \
+		SetTracingController ShouldAbortOnUncaughtException SnapshotData \
+		SpinEventLoop Start StartExecutionCallbackInfoWithModule Stop \
+		TearDownOncePerProcess TriggerNodeReport TryEncode UVException \
+		UnregisterContext signo_string; do
+		_m="${#_e}$_e"
+		LDFLAGS="$LDFLAGS --export-prefix=_ZN4node$_m --export-prefix=_ZNK4node$_m"
+	done
+	# The two public nested names, mangled with both components.
+	for _p in "7tracing17TracingController" "6crypto9GetSSLCtx"; do
+		LDFLAGS="$LDFLAGS --export-prefix=_ZN4node$_p --export-prefix=_ZNK4node$_p"
+	done
+	# visorjs-dep-abi: begin (generated, see visorjs-dep-abi.mjs)
+	# OpenSSL .num families.
+	for _e in \
+		ACCESS_ ADMISSIONS_ ADMISSION_ AES_ ASIdOrRange_ \
+		ASIdentifierChoice_ ASIdentifiers_ ASN1_ ASRange_ ASYNC_ \
+		AUTHORITY_ BASIC_ BF_ BIO_asn1_ BIO_ctrl_ BIO_dump_ BIO_f_ \
+		BIO_get_ BIO_meth_ BIO_new_ BIO_s_ BIO_set_ BIO_sock_ BIO_socket_ \
+		BN_BLINDING_ BN_CTX_ BN_GENCB_ BN_GF2m_ BN_X931_ BN_generate_ \
+		BN_get0_ BN_get_ BN_is_ BN_mod_ BN_nist_ BN_priv_ BN_rand_ BN_set_ \
+		BN_signed_ BN_to_ BUF_ CERTIFICATEPOLICIES_ CMAC_ CMS_ContentInfo_ \
+		CMS_EnvelopedData_ CMS_ReceiptRequest_ CMS_RecipientInfo_kari_ \
+		CMS_RecipientInfo_ktri_ CMS_RecipientInfo_set0_ \
+		CMS_SignerInfo_get0_ CMS_add0_ CMS_add1_ CMS_add_ CMS_decrypt_ \
+		CMS_digest_ CMS_get0_ CMS_get1_ CMS_signed_ CMS_unsigned_ CONF_ \
+		CRL_ CRYPTO_ CTLOG_ CT_ DES_ede3_ DES_set_ DH_ DHparams_ \
+		DIRECTORYSTRING_ DISPLAYTEXT_ DIST_ DSA_ DSAparams_ DSO_ ECDSA_ \
+		ECPARAMETERS_ ECPKPARAMETERS_ EC_GFp_ EC_GROUP_ EC_KEY_ EC_POINT_ \
+		EDIPARTYNAME_ ERR_add_ ERR_get_ ERR_load_ ERR_peek_ ERR_print_ \
+		ERR_set_ ESS_ EVP_ASYM_ EVP_CIPHER_ EVP_CipherInit_ EVP_ENCODE_ \
+		EVP_KDF_ EVP_KEM_ EVP_KEYEXCH_ EVP_KEYMGMT_ EVP_MAC_ EVP_MD_ \
+		EVP_PBE_ EVP_PKEY_ EVP_RAND_ EVP_SIGNATURE_ EVP_SKEYMGMT_ \
+		EVP_SKEY_ EVP_add_ EVP_aria_ EVP_camellia_ EVP_get_ EVP_seed_ \
+		EVP_sha3_ EVP_sm4_ EXTENDED_ GENERAL_ HMAC_ IDEA_ IPAddressChoice_ \
+		IPAddressFamily_ IPAddressOrRange_ IPAddressRange_ ISSUER_ \
+		ISSUING_ MD4_ MD5_ MDC2_ NAME_ NAMING_ NCONF_ NETSCAPE_CERT_ \
+		NETSCAPE_SPKAC_ NETSCAPE_SPKI_ NOTICEREF_ OBJ_NAME_ OCSP_ \
+		OPENSSL_INIT_ OPENSSL_LH_ OPENSSL_fork_ OPENSSL_sk_ \
+		OPENSSL_version_ OSSL_AA_ OSSL_ALLOWED_ OSSL_ATAV_ \
+		OSSL_ATTRIBUTES_ OSSL_ATTRIBUTE_ OSSL_AUTHORITY_ OSSL_BASIC_ \
+		OSSL_CMP_ATAVS_ OSSL_CMP_ATAV_ OSSL_CMP_CTX_ OSSL_CMP_HDR_ \
+		OSSL_CMP_ITAV_get0_ OSSL_CMP_ITAV_new0_ OSSL_CMP_ITAV_new_ \
+		OSSL_CMP_PKIHEADER_ OSSL_CMP_PKISI_ OSSL_CMP_SRV_ OSSL_CMP_exec_ \
+		OSSL_CMP_get1_ OSSL_CRMF_CERTID_ OSSL_CRMF_CERTTEMPLATE_ \
+		OSSL_CRMF_ENCRYPTEDKEY_ OSSL_CRMF_ENCRYPTEDVALUE_ OSSL_CRMF_MSGS_ \
+		OSSL_CRMF_MSG_ OSSL_CRMF_PBMPARAMETER_ OSSL_CRMF_SINGLEPUBINFO_ \
+		OSSL_DAY_ OSSL_DECODER_ OSSL_ENCODER_ OSSL_ERR_ OSSL_ESS_ \
+		OSSL_HASH_ OSSL_HPKE_ OSSL_HTTP_ OSSL_IETF_ OSSL_INFO_ \
+		OSSL_ISSUER_SERIAL_get0_ OSSL_ISSUER_SERIAL_set1_ OSSL_LIB_ \
+		OSSL_NAMED_ OSSL_PARAM_ OSSL_PRIVILEGE_ OSSL_PROVIDER_ OSSL_QUIC_ \
+		OSSL_ROLE_ OSSL_SELF_ OSSL_STORE_ OSSL_TARGETING_ OSSL_TARGETS_ \
+		OSSL_TARGET_ OSSL_TIME_ OSSL_USER_ OSSL_trace_ OTHERNAME_ \
+		PBE2PARAM_ PBEPARAM_ PBKDF2PARAM_ PBMAC1PARAM_ PEM_ PKCS12_ \
+		PKCS5_PBE_ PKCS5_pbe2_ PKCS5_pbe_ PKCS7_ PKCS8_ PKEY_ POLICYINFO_ \
+		POLICYQUALINFO_ POLICY_ PROFESSION_ PROXY_ RAND_ RC2_ RIPEMD160_ \
+		RSA_OAEP_ RSA_PSS_ RSA_X931_ RSA_generate_ RSA_get0_ RSA_get_ \
+		RSA_meth_ RSA_padding_ RSA_set0_ RSA_set_ RSA_verify_ SCRYPT_ \
+		SCT_LIST_ SCT_get0_ SCT_get_ SCT_set0_ SCT_set1_ SCT_set_ SEED_ \
+		SHA1_ SHA224_ SHA256_ SHA384_ SHA512_ SMIME_ SRP_ SSL_CIPHER_ \
+		SSL_COMP_ SSL_CONF_ SSL_CTX_add_ SSL_CTX_dane_ SSL_CTX_get0_ \
+		SSL_CTX_get_ SSL_CTX_load_ SSL_CTX_sess_ SSL_CTX_set0_ \
+		SSL_CTX_set1_ SSL_CTX_set_ SSL_CTX_use_ SSL_SESSION_ SSL_add_ \
+		SSL_alert_ SSL_client_ SSL_dane_ SSL_get0_ SSL_get1_ SSL_get_ \
+		SSL_is_ SSL_new_ SSL_set0_ SSL_set1_ SSL_set_ SSL_use_ SSL_write_ \
+		SXNETID_ SXNET_ TLS_ TS_ TXT_ UI_ USERNOTICE_ WHIRLPOOL_ X509V3_ \
+		X509_ACERT_INFO_ X509_ACERT_add1_ X509_ACERT_get0_ X509_ACERT_get_ \
+		X509_ACERT_set0_ X509_ACERT_set1_ X509_ALGOR_ X509_ATTRIBUTE_ \
+		X509_CERT_ X509_CINF_ X509_CRL_ X509_EXTENSION_ X509_LOOKUP_ \
+		X509_NAME_ X509_OBJECT_ X509_PUBKEY_ X509_PURPOSE_ X509_REQ_ \
+		X509_REVOKED_ X509_SIG_ X509_STORE_ X509_TRUST_ X509_VAL_ \
+		X509_VERIFY_ X509_add1_ X509_add_ X509_check_ X509_cmp_ X509_get0_ \
+		X509_get_ X509_issuer_ X509_load_ X509_policy_ X509_print_ \
+		X509_set_ X509_subject_ X509at_ X509v3_ a2i_ conf_ d2i_ASN1_ \
+		d2i_CMS_ d2i_DSA_ d2i_ESS_ d2i_OCSP_ d2i_OSSL_ALLOWED_ \
+		d2i_OSSL_ATTRIBUTE_ d2i_OSSL_TIME_ d2i_PKCS12_ d2i_PKCS7_ \
+		d2i_PKCS8_ d2i_PUBKEY_ d2i_PrivateKey_ d2i_RSA_ d2i_TS_ d2i_X509_ \
+		i2a_ i2b_ i2d_ASN1_ i2d_CMS_ i2d_DSA_ i2d_ESS_ i2d_OCSP_ \
+		i2d_OSSL_ALLOWED_ i2d_OSSL_ATTRIBUTE_ i2d_OSSL_TIME_ i2d_PKCS12_ \
+		i2d_PKCS7_ i2d_PKCS8PrivateKey_ i2d_PKCS8_ i2d_RSA_ i2d_TS_ \
+		i2d_X509_ i2d_re_ i2s_ i2v_ s2i_ v2i_; do
+		LDFLAGS="$LDFLAGS --export-prefix=$_e"
+	done
+	# OpenSSL .num names no family prefix covers.
+	for _e in \
+		BIGNUM_it BIO_ADDRINFO_address BIO_ADDRINFO_family \
+		BIO_ADDRINFO_free BIO_ADDRINFO_next BIO_ADDRINFO_protocol \
+		BIO_ADDRINFO_socktype BIO_ADDR_clear BIO_ADDR_copy BIO_ADDR_dup \
+		BIO_ADDR_family BIO_ADDR_free BIO_ADDR_hostname_string \
+		BIO_ADDR_new BIO_ADDR_path_string BIO_ADDR_rawaddress \
+		BIO_ADDR_rawmake BIO_ADDR_rawport BIO_ADDR_service_string \
+		BIO_accept BIO_accept_ex BIO_bind BIO_callback_ctrl \
+		BIO_clear_flags BIO_closesocket BIO_connect BIO_copy_next_retry \
+		BIO_ctrl BIO_debug_callback BIO_debug_callback_ex \
+		BIO_dgram_non_fatal_error BIO_do_connect_retry BIO_dump \
+		BIO_dup_chain BIO_err_is_non_fatal BIO_fd_non_fatal_error \
+		BIO_fd_should_retry BIO_find_type BIO_free BIO_free_all \
+		BIO_gethostbyname BIO_gets BIO_hex_string BIO_indent BIO_int_ctrl \
+		BIO_listen BIO_lookup BIO_lookup_ex BIO_method_name \
+		BIO_method_type BIO_new BIO_next BIO_nread BIO_nread0 \
+		BIO_number_read BIO_number_written BIO_nwrite BIO_nwrite0 \
+		BIO_parse_hostserv BIO_pop BIO_printf BIO_ptr_ctrl BIO_push \
+		BIO_puts BIO_read BIO_read_ex BIO_recvmmsg BIO_sendmmsg \
+		BIO_snprintf BIO_socket BIO_ssl_copy_session_id BIO_ssl_shutdown \
+		BIO_test_flags BIO_up_ref BIO_vfree BIO_vprintf BIO_vsnprintf \
+		BIO_wait BIO_write BIO_write_ex BN_MONT_CTX_copy BN_MONT_CTX_free \
+		BN_MONT_CTX_new BN_MONT_CTX_set BN_MONT_CTX_set_locked \
+		BN_RECP_CTX_free BN_RECP_CTX_new BN_RECP_CTX_set BN_abs_is_word \
+		BN_add BN_add_word BN_are_coprime BN_asc2bn BN_bin2bn BN_bn2bin \
+		BN_bn2binpad BN_bn2dec BN_bn2hex BN_bn2lebinpad BN_bn2mpi \
+		BN_bn2nativepad BN_bntest_rand BN_check_prime BN_clear \
+		BN_clear_bit BN_clear_free BN_cmp BN_consttime_swap BN_copy \
+		BN_dec2bn BN_div BN_div_recp BN_div_word BN_dup BN_exp BN_free \
+		BN_from_montgomery BN_gcd BN_hex2bn BN_kronecker BN_lebin2bn \
+		BN_lshift BN_lshift1 BN_mask_bits BN_mpi2bn BN_mul BN_mul_word \
+		BN_native2bn BN_new BN_nnmod BN_num_bits BN_num_bits_word \
+		BN_options BN_print BN_print_fp BN_pseudo_rand \
+		BN_pseudo_rand_range BN_rand BN_reciprocal BN_rshift BN_rshift1 \
+		BN_secure_new BN_security_bits BN_sqr BN_sub BN_sub_word BN_swap \
+		BN_uadd BN_ucmp BN_usub BN_value_one BN_with_flags BN_zero_ex \
+		CAST_cbc_encrypt CAST_cfb64_encrypt CAST_decrypt CAST_ecb_encrypt \
+		CAST_encrypt CAST_ofb64_encrypt CAST_set_key CBIGNUM_it \
+		CMS_AuthEnvelopedData_create CMS_AuthEnvelopedData_create_ex \
+		CMS_EncryptedData_decrypt CMS_EncryptedData_encrypt \
+		CMS_EncryptedData_encrypt_ex CMS_EncryptedData_set1_key \
+		CMS_RecipientEncryptedKey_cert_cmp \
+		CMS_RecipientEncryptedKey_get0_id CMS_RecipientInfo_decrypt \
+		CMS_RecipientInfo_encrypt CMS_RecipientInfo_get0_pkey_ctx \
+		CMS_RecipientInfo_kekri_get0_id CMS_RecipientInfo_kekri_id_cmp \
+		CMS_RecipientInfo_type CMS_SharedInfo_encode CMS_SignedData_free \
+		CMS_SignedData_init CMS_SignedData_new CMS_SignedData_verify \
+		CMS_SignerInfo_cert_cmp CMS_SignerInfo_set1_signer_cert \
+		CMS_SignerInfo_sign CMS_SignerInfo_verify \
+		CMS_SignerInfo_verify_content CMS_compress CMS_data CMS_dataFinal \
+		CMS_dataInit CMS_data_create CMS_data_create_ex CMS_decrypt \
+		CMS_encrypt CMS_encrypt_ex CMS_final CMS_final_digest \
+		CMS_is_detached CMS_set1_eContentType CMS_set1_signers_certs \
+		CMS_set_detached CMS_sign CMS_sign_ex CMS_sign_receipt CMS_stream \
+		CMS_uncompress CMS_verify CMS_verify_receipt Camellia_cbc_encrypt \
+		Camellia_cfb128_encrypt Camellia_cfb1_encrypt \
+		Camellia_cfb8_encrypt Camellia_ctr128_encrypt Camellia_decrypt \
+		Camellia_ecb_encrypt Camellia_encrypt Camellia_ofb128_encrypt \
+		Camellia_set_key DES_cbc_cksum DES_cbc_encrypt DES_cfb64_encrypt \
+		DES_cfb_encrypt DES_check_key_parity DES_crypt DES_decrypt3 \
+		DES_ecb3_encrypt DES_ecb_encrypt DES_encrypt1 DES_encrypt2 \
+		DES_encrypt3 DES_fcrypt DES_is_weak_key DES_key_sched \
+		DES_ncbc_encrypt DES_ofb64_encrypt DES_ofb_encrypt DES_options \
+		DES_pcbc_encrypt DES_quad_cksum DES_random_key DES_string_to_2keys \
+		DES_string_to_key DES_xcbc_encrypt DTLS_client_method \
+		DTLS_get_data_mtu DTLS_method DTLS_server_method DTLS_set_timer_cb \
+		DTLSv1_2_client_method DTLSv1_2_method DTLSv1_2_server_method \
+		DTLSv1_client_method DTLSv1_listen DTLSv1_method \
+		DTLSv1_server_method ECDH_KDF_X9_62 ECDH_compute_key \
+		ECPKParameters_print ECPKParameters_print_fp ECParameters_print \
+		ECParameters_print_fp EC_GF2m_simple_method \
+		EC_METHOD_get_field_type EC_POINTs_make_affine EC_POINTs_mul \
+		EC_curve_nid2nist EC_curve_nist2nid EC_get_builtin_curves \
+		ERR_clear_error ERR_clear_last_mark ERR_count_to_mark \
+		ERR_error_string ERR_error_string_n ERR_func_error_string \
+		ERR_lib_error_string ERR_new ERR_pop ERR_pop_to_mark \
+		ERR_reason_error_string ERR_remove_state ERR_remove_thread_state \
+		ERR_unload_strings ERR_vset_error EVP_BytesToKey EVP_Cipher \
+		EVP_CipherFinal EVP_CipherFinal_ex EVP_CipherInit \
+		EVP_CipherPipelineDecryptInit EVP_CipherPipelineEncryptInit \
+		EVP_CipherPipelineFinal EVP_CipherPipelineUpdate EVP_CipherUpdate \
+		EVP_DecodeBlock EVP_DecodeFinal EVP_DecodeInit EVP_DecodeUpdate \
+		EVP_DecryptFinal EVP_DecryptFinal_ex EVP_DecryptInit \
+		EVP_DecryptInit_ex EVP_DecryptInit_ex2 EVP_DecryptUpdate \
+		EVP_Digest EVP_DigestFinal EVP_DigestFinalXOF EVP_DigestFinal_ex \
+		EVP_DigestInit EVP_DigestInit_ex EVP_DigestInit_ex2 EVP_DigestSign \
+		EVP_DigestSignFinal EVP_DigestSignInit EVP_DigestSignInit_ex \
+		EVP_DigestSignUpdate EVP_DigestSqueeze EVP_DigestUpdate \
+		EVP_DigestVerify EVP_DigestVerifyFinal EVP_DigestVerifyInit \
+		EVP_DigestVerifyInit_ex EVP_DigestVerifyUpdate EVP_EncodeBlock \
+		EVP_EncodeFinal EVP_EncodeInit EVP_EncodeUpdate EVP_EncryptFinal \
+		EVP_EncryptFinal_ex EVP_EncryptInit EVP_EncryptInit_ex \
+		EVP_EncryptInit_ex2 EVP_EncryptUpdate EVP_OpenFinal EVP_OpenInit \
+		EVP_PKCS82PKEY EVP_PKCS82PKEY_ex EVP_PKEY2PKCS8 EVP_Q_digest \
+		EVP_Q_mac EVP_SealFinal EVP_SealInit EVP_SignFinal \
+		EVP_SignFinal_ex EVP_VerifyFinal EVP_VerifyFinal_ex \
+		EVP_aes_128_cbc EVP_aes_128_cbc_hmac_sha1 \
+		EVP_aes_128_cbc_hmac_sha256 EVP_aes_128_ccm EVP_aes_128_cfb1 \
+		EVP_aes_128_cfb128 EVP_aes_128_cfb8 EVP_aes_128_ctr \
+		EVP_aes_128_ecb EVP_aes_128_gcm EVP_aes_128_ocb EVP_aes_128_ofb \
+		EVP_aes_128_wrap EVP_aes_128_wrap_pad EVP_aes_128_xts \
+		EVP_aes_192_cbc EVP_aes_192_ccm EVP_aes_192_cfb1 \
+		EVP_aes_192_cfb128 EVP_aes_192_cfb8 EVP_aes_192_ctr \
+		EVP_aes_192_ecb EVP_aes_192_gcm EVP_aes_192_ocb EVP_aes_192_ofb \
+		EVP_aes_192_wrap EVP_aes_192_wrap_pad EVP_aes_256_cbc \
+		EVP_aes_256_cbc_hmac_sha1 EVP_aes_256_cbc_hmac_sha256 \
+		EVP_aes_256_ccm EVP_aes_256_cfb1 EVP_aes_256_cfb128 \
+		EVP_aes_256_cfb8 EVP_aes_256_ctr EVP_aes_256_ecb EVP_aes_256_gcm \
+		EVP_aes_256_ocb EVP_aes_256_ofb EVP_aes_256_wrap \
+		EVP_aes_256_wrap_pad EVP_aes_256_xts EVP_bf_cbc EVP_bf_cfb64 \
+		EVP_bf_ecb EVP_bf_ofb EVP_blake2b512 EVP_blake2s256 EVP_cast5_cbc \
+		EVP_cast5_cfb64 EVP_cast5_ecb EVP_cast5_ofb EVP_chacha20 \
+		EVP_chacha20_poly1305 EVP_default_properties_enable_fips \
+		EVP_default_properties_is_fips_enabled EVP_des_cbc EVP_des_cfb1 \
+		EVP_des_cfb64 EVP_des_cfb8 EVP_des_ecb EVP_des_ede EVP_des_ede3 \
+		EVP_des_ede3_cbc EVP_des_ede3_cfb1 EVP_des_ede3_cfb64 \
+		EVP_des_ede3_cfb8 EVP_des_ede3_ecb EVP_des_ede3_ofb \
+		EVP_des_ede3_wrap EVP_des_ede_cbc EVP_des_ede_cfb64 \
+		EVP_des_ede_ecb EVP_des_ede_ofb EVP_des_ofb EVP_desx_cbc \
+		EVP_enc_null EVP_get1_default_properties EVP_idea_cbc \
+		EVP_idea_cfb64 EVP_idea_ecb EVP_idea_ofb EVP_md4 EVP_md5 \
+		EVP_md5_sha1 EVP_md_null EVP_mdc2 EVP_rc2_40_cbc EVP_rc2_64_cbc \
+		EVP_rc2_cbc EVP_rc2_cfb64 EVP_rc2_ecb EVP_rc2_ofb EVP_rc4 \
+		EVP_rc4_40 EVP_rc4_hmac_md5 EVP_read_pw_string \
+		EVP_read_pw_string_min EVP_ripemd160 EVP_set_default_properties \
+		EVP_set_pw_prompt EVP_sha1 EVP_sha224 EVP_sha256 EVP_sha384 \
+		EVP_sha512 EVP_sha512_224 EVP_sha512_256 EVP_shake128 EVP_shake256 \
+		EVP_sm3 EVP_whirlpool HMAC INT32_it INT64_it LONG_it MD4 MD5 MDC2 \
+		OBJ_add_object OBJ_add_sigid OBJ_bsearch_ OBJ_bsearch_ex_ OBJ_cmp \
+		OBJ_create OBJ_create_objects OBJ_dup OBJ_find_sigid_algs \
+		OBJ_find_sigid_by_algs OBJ_get0_data OBJ_length OBJ_ln2nid \
+		OBJ_new_nid OBJ_nid2ln OBJ_nid2obj OBJ_nid2sn OBJ_obj2nid \
+		OBJ_obj2txt OBJ_sigid_free OBJ_sn2nid OBJ_txt2nid OBJ_txt2obj \
+		OPENSSL_DIR_end OPENSSL_DIR_read OPENSSL_asc2uni OPENSSL_atexit \
+		OPENSSL_buf2hexstr OPENSSL_buf2hexstr_ex OPENSSL_cipher_name \
+		OPENSSL_cleanse OPENSSL_cleanup OPENSSL_config OPENSSL_die \
+		OPENSSL_gmtime OPENSSL_gmtime_adj OPENSSL_gmtime_diff \
+		OPENSSL_hexchar2int OPENSSL_hexstr2buf OPENSSL_hexstr2buf_ex \
+		OPENSSL_info OPENSSL_init OPENSSL_init_crypto OPENSSL_init_ssl \
+		OPENSSL_isservice OPENSSL_issetugid OPENSSL_load_builtin_modules \
+		OPENSSL_strcasecmp OPENSSL_strlcat OPENSSL_strlcpy \
+		OPENSSL_strncasecmp OPENSSL_strnlen OPENSSL_strtoul \
+		OPENSSL_thread_stop OPENSSL_thread_stop_ex OPENSSL_uni2asc \
+		OPENSSL_uni2utf8 OPENSSL_utf82uni OSSL_CMP_CRLSTATUS_create \
+		OSSL_CMP_CRLSTATUS_free OSSL_CMP_CRLSTATUS_get0 \
+		OSSL_CMP_CRLSTATUS_new1 OSSL_CMP_ITAV_create OSSL_CMP_ITAV_dup \
+		OSSL_CMP_ITAV_free OSSL_CMP_ITAV_get1_certReqTemplate \
+		OSSL_CMP_ITAV_push0_stack_item OSSL_CMP_ITAV_set0 OSSL_CMP_MSG_dup \
+		OSSL_CMP_MSG_free OSSL_CMP_MSG_get0_certreq_publickey \
+		OSSL_CMP_MSG_get0_header OSSL_CMP_MSG_get_bodytype \
+		OSSL_CMP_MSG_http_perform OSSL_CMP_MSG_it OSSL_CMP_MSG_read \
+		OSSL_CMP_MSG_update_recipNonce OSSL_CMP_MSG_update_transactionID \
+		OSSL_CMP_MSG_write OSSL_CMP_PKISTATUS_it OSSL_CMP_STATUSINFO_new \
+		OSSL_CMP_certConf_cb OSSL_CMP_log_close OSSL_CMP_log_open \
+		OSSL_CMP_print_errors_cb OSSL_CMP_print_to_bio \
+		OSSL_CMP_snprint_PKIStatusInfo OSSL_CMP_try_certreq \
+		OSSL_CMP_validate_cert_path OSSL_CMP_validate_msg \
+		OSSL_CRMF_ATTRIBUTETYPEANDVALUE_dup \
+		OSSL_CRMF_ATTRIBUTETYPEANDVALUE_free \
+		OSSL_CRMF_PKIPUBLICATIONINFO_free OSSL_CRMF_PKIPUBLICATIONINFO_it \
+		OSSL_CRMF_PKIPUBLICATIONINFO_new OSSL_CRMF_pbm_new \
+		OSSL_CRMF_pbmp_new OSSL_EC_curve_nid2name OSSL_GENERAL_NAMES_print \
+		OSSL_INDICATOR_get_callback OSSL_INDICATOR_set_callback \
+		OSSL_ISSUER_SERIAL_free OSSL_ISSUER_SERIAL_new \
+		OSSL_OBJECT_DIGEST_INFO_free OSSL_OBJECT_DIGEST_INFO_get0_digest \
+		OSSL_OBJECT_DIGEST_INFO_new OSSL_OBJECT_DIGEST_INFO_set1_digest \
+		OSSL_STACK_OF_X509_free OSSL_default_cipher_list \
+		OSSL_default_ciphersuites OSSL_get_max_threads \
+		OSSL_get_thread_support_flags OSSL_parse_url OSSL_set_max_threads \
+		OSSL_sleep OpenSSL_version OpenSSL_version_num \
+		PBMAC1_get1_pbkdf2_param PKCS1_MGF1 PKCS5_PBKDF2_HMAC \
+		PKCS5_PBKDF2_HMAC_SHA1 PKCS5_pbkdf2_set PKCS5_pbkdf2_set_ex \
+		PKCS5_v2_PBE_keyivgen PKCS5_v2_PBE_keyivgen_ex \
+		PKCS5_v2_scrypt_keyivgen PKCS5_v2_scrypt_keyivgen_ex RC4 \
+		RC4_options RC4_set_key RIPEMD160 RSAPrivateKey_dup \
+		RSAPrivateKey_it RSAPublicKey_dup RSAPublicKey_it \
+		RSA_PKCS1_OpenSSL RSA_bits RSA_blinding_off RSA_blinding_on \
+		RSA_check_key RSA_check_key_ex RSA_clear_flags RSA_flags RSA_free \
+		RSA_new RSA_new_method RSA_null_method RSA_pkey_ctx_ctrl RSA_print \
+		RSA_print_fp RSA_private_decrypt RSA_private_encrypt \
+		RSA_public_decrypt RSA_public_encrypt RSA_security_bits \
+		RSA_setup_blinding RSA_sign RSA_sign_ASN1_OCTET_STRING RSA_size \
+		RSA_test_flags RSA_up_ref RSA_verify SCT_free SCT_new \
+		SCT_new_from_base64 SCT_print SCT_validate \
+		SCT_validation_status_string SHA1 SHA224 SHA256 SHA384 SHA512 \
+		SSL_CTX_SRP_CTX_free SSL_CTX_SRP_CTX_init SSL_CTX_add1_to_CA_list \
+		SSL_CTX_callback_ctrl SSL_CTX_check_private_key \
+		SSL_CTX_clear_options SSL_CTX_compress_certs SSL_CTX_config \
+		SSL_CTX_ct_is_enabled SSL_CTX_ctrl SSL_CTX_enable_ct \
+		SSL_CTX_flush_sessions SSL_CTX_flush_sessions_ex SSL_CTX_free \
+		SSL_CTX_get1_compressed_cert SSL_CTX_has_client_custom_ext \
+		SSL_CTX_new SSL_CTX_new_ex SSL_CTX_remove_session SSL_CTX_sessions \
+		SSL_CTX_up_ref SSL_SRP_CTX_free SSL_SRP_CTX_init SSL_accept \
+		SSL_accept_connection SSL_accept_stream SSL_add1_host \
+		SSL_add1_to_CA_list SSL_alloc_buffers SSL_bytes_to_cipher_list \
+		SSL_callback_ctrl SSL_certs_clear SSL_check_chain \
+		SSL_check_private_key SSL_clear SSL_clear_options \
+		SSL_compress_certs SSL_config SSL_connect SSL_copy_session_id \
+		SSL_ct_is_enabled SSL_ctrl SSL_do_handshake SSL_dup \
+		SSL_dup_CA_list SSL_enable_ct SSL_export_keying_material \
+		SSL_export_keying_material_early SSL_extension_supported SSL_free \
+		SSL_free_buffers SSL_group_to_name SSL_handle_events \
+		SSL_has_matching_session_id SSL_has_pending SSL_in_before \
+		SSL_in_init SSL_inject_net_dgram SSL_key_update SSL_listen \
+		SSL_load_client_CA_file SSL_load_client_CA_file_ex \
+		SSL_net_read_desired SSL_net_write_desired SSL_new SSL_peek \
+		SSL_peek_ex SSL_pending SSL_poll SSL_read SSL_read_early_data \
+		SSL_read_ex SSL_renegotiate SSL_renegotiate_abbreviated \
+		SSL_renegotiate_pending SSL_rstate_string SSL_rstate_string_long \
+		SSL_select_next_proto SSL_sendfile SSL_session_reused SSL_shutdown \
+		SSL_shutdown_ex SSL_srp_server_param_with_username \
+		SSL_state_string SSL_state_string_long SSL_stateless \
+		SSL_stream_conclude SSL_stream_reset SSL_trace SSL_up_ref \
+		SSL_verify_client_post_handshake SSL_version SSL_waiting_for_async \
+		SSL_want SSL_write TLSv1_1_client_method TLSv1_1_method \
+		TLSv1_1_server_method TLSv1_2_client_method TLSv1_2_method \
+		TLSv1_2_server_method TLSv1_client_method TLSv1_method \
+		TLSv1_server_method UINT32_it UINT64_it UTF8_getc UTF8_putc \
+		WHIRLPOOL X509_ACERT_ISSUER_V2FORM_free \
+		X509_ACERT_ISSUER_V2FORM_new X509_ACERT_add_attr_nconf \
+		X509_ACERT_delete_attr X509_ACERT_dup X509_ACERT_free \
+		X509_ACERT_it X509_ACERT_new X509_ACERT_print X509_ACERT_print_ex \
+		X509_ACERT_set_version X509_ACERT_sign X509_ACERT_sign_ctx \
+		X509_ACERT_verify X509_ALGORS_it X509_EXTENSIONS_it X509_INFO_free \
+		X509_INFO_new X509_PKEY_free X509_PKEY_new X509_POLICY_NODE_print \
+		X509_alias_get0 X509_alias_set1 X509_aux_print X509_build_chain \
+		X509_certificate_type X509_chain_check_suiteb X509_chain_up_ref \
+		X509_cmp X509_delete_ext X509_digest X509_digest_sig X509_dup \
+		X509_email_free X509_find_by_issuer_and_serial \
+		X509_find_by_subject X509_free X509_get1_email X509_get1_ocsp \
+		X509_getm_notAfter X509_getm_notBefore X509_gmtime_adj X509_it \
+		X509_keyid_get0 X509_keyid_set1 X509_new X509_new_ex \
+		X509_ocspid_print X509_print X509_pubkey_digest X509_reject_clear \
+		X509_self_signed X509_set0_distinguishing_id X509_set1_notAfter \
+		X509_set1_notBefore X509_sign X509_sign_ctx X509_signature_dump \
+		X509_signature_print X509_supported_extension X509_time_adj \
+		X509_time_adj_ex X509_to_X509_REQ X509_trust_clear X509_trusted \
+		X509_up_ref X509_verify X509_verify_cert \
+		X509_verify_cert_error_string ZINT32_it ZINT64_it ZLONG_it \
+		ZUINT32_it ZUINT64_it a2d_ASN1_OBJECT asn1_d2i_read_bio \
+		b2i_PVK_bio b2i_PVK_bio_ex b2i_PrivateKey b2i_PrivateKey_bio \
+		b2i_PublicKey b2i_PublicKey_bio d2i_ACCESS_DESCRIPTION \
+		d2i_ADMISSIONS d2i_ADMISSION_SYNTAX d2i_ASIdOrRange \
+		d2i_ASIdentifierChoice d2i_ASIdentifiers d2i_ASRange \
+		d2i_AUTHORITY_INFO_ACCESS d2i_AUTHORITY_KEYID d2i_AutoPrivateKey \
+		d2i_AutoPrivateKey_ex d2i_BASIC_CONSTRAINTS \
+		d2i_CERTIFICATEPOLICIES d2i_CRL_DIST_POINTS d2i_DHparams \
+		d2i_DHxparams d2i_DIRECTORYSTRING d2i_DISPLAYTEXT d2i_DIST_POINT \
+		d2i_DIST_POINT_NAME d2i_DSAPrivateKey d2i_DSAPrivateKey_bio \
+		d2i_DSAPrivateKey_fp d2i_DSAPublicKey d2i_DSAparams d2i_ECDSA_SIG \
+		d2i_ECPKParameters d2i_ECParameters d2i_ECPrivateKey \
+		d2i_ECPrivateKey_bio d2i_ECPrivateKey_fp d2i_EC_PUBKEY \
+		d2i_EC_PUBKEY_bio d2i_EC_PUBKEY_fp d2i_EDIPARTYNAME \
+		d2i_EXTENDED_KEY_USAGE d2i_GENERAL_NAME d2i_GENERAL_NAMES \
+		d2i_IPAddressChoice d2i_IPAddressFamily d2i_IPAddressOrRange \
+		d2i_IPAddressRange d2i_ISSUER_SIGN_TOOL d2i_ISSUING_DIST_POINT \
+		d2i_KeyParams d2i_KeyParams_bio d2i_NAMING_AUTHORITY \
+		d2i_NETSCAPE_CERT_SEQUENCE d2i_NETSCAPE_SPKAC d2i_NETSCAPE_SPKI \
+		d2i_NOTICEREF d2i_OSSL_AA_DIST_POINT d2i_OSSL_ATAV \
+		d2i_OSSL_ATTRIBUTES_SYNTAX d2i_OSSL_AUTHORITY_ATTRIBUTE_ID_SYNTAX \
+		d2i_OSSL_BASIC_ATTR_CONSTRAINTS d2i_OSSL_CMP_ATAVS \
+		d2i_OSSL_CMP_MSG d2i_OSSL_CMP_MSG_bio d2i_OSSL_CMP_PKIHEADER \
+		d2i_OSSL_CMP_PKISI d2i_OSSL_CRMF_CERTID d2i_OSSL_CRMF_CERTTEMPLATE \
+		d2i_OSSL_CRMF_ENCRYPTEDKEY d2i_OSSL_CRMF_ENCRYPTEDVALUE \
+		d2i_OSSL_CRMF_MSG d2i_OSSL_CRMF_MSGS d2i_OSSL_CRMF_PBMPARAMETER \
+		d2i_OSSL_CRMF_PKIPUBLICATIONINFO d2i_OSSL_CRMF_SINGLEPUBINFO \
+		d2i_OSSL_DAY_TIME d2i_OSSL_DAY_TIME_BAND d2i_OSSL_HASH \
+		d2i_OSSL_IETF_ATTR_SYNTAX d2i_OSSL_INFO_SYNTAX \
+		d2i_OSSL_INFO_SYNTAX_POINTER d2i_OSSL_NAMED_DAY \
+		d2i_OSSL_PRIVILEGE_POLICY_ID d2i_OSSL_ROLE_SPEC_CERT_ID \
+		d2i_OSSL_ROLE_SPEC_CERT_ID_SYNTAX d2i_OSSL_TARGET \
+		d2i_OSSL_TARGETING_INFORMATION d2i_OSSL_TARGETS \
+		d2i_OSSL_USER_NOTICE_SYNTAX d2i_OTHERNAME d2i_PBE2PARAM \
+		d2i_PBEPARAM d2i_PBKDF2PARAM d2i_PBMAC1PARAM d2i_PKCS12 d2i_PKCS7 \
+		d2i_PKCS8PrivateKey_bio d2i_PKCS8PrivateKey_fp \
+		d2i_PKEY_USAGE_PERIOD d2i_POLICYINFO d2i_POLICYQUALINFO \
+		d2i_PROFESSION_INFO d2i_PROXY_CERT_INFO_EXTENSION d2i_PROXY_POLICY \
+		d2i_PUBKEY d2i_PrivateKey d2i_PublicKey d2i_RSAPrivateKey \
+		d2i_RSAPrivateKey_bio d2i_RSAPrivateKey_fp d2i_RSAPublicKey \
+		d2i_RSAPublicKey_bio d2i_RSAPublicKey_fp d2i_SCRYPT_PARAMS \
+		d2i_SCT_LIST d2i_SSL_SESSION d2i_SSL_SESSION_ex d2i_SXNET \
+		d2i_SXNETID d2i_USERNOTICE d2i_X509 err_free_strings_int \
+		i2d_ACCESS_DESCRIPTION i2d_ADMISSIONS i2d_ADMISSION_SYNTAX \
+		i2d_ASIdOrRange i2d_ASIdentifierChoice i2d_ASIdentifiers \
+		i2d_ASRange i2d_AUTHORITY_INFO_ACCESS i2d_AUTHORITY_KEYID \
+		i2d_BASIC_CONSTRAINTS i2d_CERTIFICATEPOLICIES i2d_CRL_DIST_POINTS \
+		i2d_DHparams i2d_DHxparams i2d_DIRECTORYSTRING i2d_DISPLAYTEXT \
+		i2d_DIST_POINT i2d_DIST_POINT_NAME i2d_DSAPrivateKey \
+		i2d_DSAPrivateKey_bio i2d_DSAPrivateKey_fp i2d_DSAPublicKey \
+		i2d_DSAparams i2d_ECDSA_SIG i2d_ECPKParameters i2d_ECParameters \
+		i2d_ECPrivateKey i2d_ECPrivateKey_bio i2d_ECPrivateKey_fp \
+		i2d_EC_PUBKEY i2d_EC_PUBKEY_bio i2d_EC_PUBKEY_fp i2d_EDIPARTYNAME \
+		i2d_EXTENDED_KEY_USAGE i2d_GENERAL_NAME i2d_GENERAL_NAMES \
+		i2d_IPAddressChoice i2d_IPAddressFamily i2d_IPAddressOrRange \
+		i2d_IPAddressRange i2d_ISSUER_SIGN_TOOL i2d_ISSUING_DIST_POINT \
+		i2d_KeyParams i2d_KeyParams_bio i2d_NAMING_AUTHORITY \
+		i2d_NETSCAPE_CERT_SEQUENCE i2d_NETSCAPE_SPKAC i2d_NETSCAPE_SPKI \
+		i2d_NOTICEREF i2d_OSSL_AA_DIST_POINT i2d_OSSL_ATAV \
+		i2d_OSSL_ATTRIBUTES_SYNTAX i2d_OSSL_AUTHORITY_ATTRIBUTE_ID_SYNTAX \
+		i2d_OSSL_BASIC_ATTR_CONSTRAINTS i2d_OSSL_CMP_ATAVS \
+		i2d_OSSL_CMP_MSG i2d_OSSL_CMP_MSG_bio i2d_OSSL_CMP_PKIHEADER \
+		i2d_OSSL_CMP_PKISI i2d_OSSL_CRMF_CERTID i2d_OSSL_CRMF_CERTTEMPLATE \
+		i2d_OSSL_CRMF_ENCRYPTEDKEY i2d_OSSL_CRMF_ENCRYPTEDVALUE \
+		i2d_OSSL_CRMF_MSG i2d_OSSL_CRMF_MSGS i2d_OSSL_CRMF_PBMPARAMETER \
+		i2d_OSSL_CRMF_PKIPUBLICATIONINFO i2d_OSSL_CRMF_SINGLEPUBINFO \
+		i2d_OSSL_DAY_TIME i2d_OSSL_DAY_TIME_BAND i2d_OSSL_HASH \
+		i2d_OSSL_IETF_ATTR_SYNTAX i2d_OSSL_INFO_SYNTAX \
+		i2d_OSSL_INFO_SYNTAX_POINTER i2d_OSSL_NAMED_DAY \
+		i2d_OSSL_PRIVILEGE_POLICY_ID i2d_OSSL_ROLE_SPEC_CERT_ID \
+		i2d_OSSL_ROLE_SPEC_CERT_ID_SYNTAX i2d_OSSL_TARGET \
+		i2d_OSSL_TARGETING_INFORMATION i2d_OSSL_TARGETS \
+		i2d_OSSL_USER_NOTICE_SYNTAX i2d_OTHERNAME i2d_PBE2PARAM \
+		i2d_PBEPARAM i2d_PBKDF2PARAM i2d_PBMAC1PARAM i2d_PKCS12 i2d_PKCS7 \
+		i2d_PKCS8PrivateKeyInfo_bio i2d_PKCS8PrivateKeyInfo_fp \
+		i2d_PKEY_USAGE_PERIOD i2d_POLICYINFO i2d_POLICYQUALINFO \
+		i2d_PROFESSION_INFO i2d_PROXY_CERT_INFO_EXTENSION i2d_PROXY_POLICY \
+		i2d_PUBKEY i2d_PUBKEY_bio i2d_PUBKEY_fp i2d_PrivateKey \
+		i2d_PrivateKey_bio i2d_PrivateKey_fp i2d_PublicKey \
+		i2d_RSAPrivateKey i2d_RSAPrivateKey_bio i2d_RSAPrivateKey_fp \
+		i2d_RSAPublicKey i2d_RSAPublicKey_bio i2d_RSAPublicKey_fp \
+		i2d_SCRYPT_PARAMS i2d_SCT_LIST i2d_SSL_SESSION i2d_SXNET \
+		i2d_SXNETID i2d_USERNOTICE i2d_X509 i2o_ECPublicKey i2o_SCT \
+		i2o_SCT_LIST i2t_ASN1_OBJECT o2i_ECPublicKey o2i_SCT o2i_SCT_LIST; do
+		LDFLAGS="$LDFLAGS --export-extra=$_e"
+	done
+	# zlib.h's ZEXTERN functions.
+	for _e in \
+		adler32 adler32_combine adler32_combine64 adler32_z compress \
+		compress2 compress2_z compressBound compressBound_z compress_z \
+		crc32 crc32_combine crc32_combine64 crc32_combine_gen \
+		crc32_combine_gen64 crc32_combine_op crc32_z deflate deflateBound \
+		deflateBound_z deflateCopy deflateEnd deflateGetDictionary \
+		deflateInit2_ deflateInit_ deflateParams deflatePending \
+		deflatePrime deflateReset deflateResetKeep deflateSetDictionary \
+		deflateSetHeader deflateTune deflateUsed get_crc_table gzbuffer \
+		gzclearerr gzclose gzclose_r gzclose_w gzdirect gzdopen gzeof \
+		gzerror gzflush gzfread gzfwrite gzgetc gzgetc_ gzgets gzoffset \
+		gzoffset64 gzopen gzopen64 gzprintf gzputc gzputs gzread gzrewind \
+		gzseek gzseek64 gzsetparams gztell gztell64 gzungetc gzvprintf \
+		gzwrite inflate inflateBack inflateBackEnd inflateBackInit_ \
+		inflateCodesUsed inflateCopy inflateEnd inflateGetDictionary \
+		inflateGetHeader inflateInit2_ inflateInit_ inflateMark \
+		inflatePrime inflateReset inflateReset2 inflateResetKeep \
+		inflateSetDictionary inflateSync inflateSyncPoint inflateUndermine \
+		inflateValidate uncompress uncompress2 uncompress2_z uncompress_z \
+		zError zlibCompileFlags zlibVersion; do
+		LDFLAGS="$LDFLAGS --export-extra=$_e"
+	done
+	# visorjs-dep-abi: end
+	export LDFLAGS
+	export LDFLAGS="$LDFLAGS -L$srcdir/deps-staged/usr/lib"
+	# As upstream's bundled build: every OpenSSL/zlib member, for addons.
+	LDFLAGS="$LDFLAGS -Wl,--whole-archive $srcdir/deps-staged/usr/lib/libcrypto.a"
+	LDFLAGS="$LDFLAGS $srcdir/deps-staged/usr/lib/libssl.a"
+	LDFLAGS="$LDFLAGS $srcdir/deps-staged/usr/lib/libz.a -Wl,--no-whole-archive"
+	# Two archives nothing on node's own link line names, because with the
+	# shared build each arrived through another library's NEEDED:
+	# libbrotlicommon behind brotlidec/brotlienc, and ICU's stub data
+	# library behind libicuuc (icu-uc.pc lists it under Libs.private, which
+	# pkg-config only emits for --static). An archive nothing references
+	# contributes nothing, so naming them is safe either way.
+	LDFLAGS="$LDFLAGS -lbrotlicommon -licudata -lv8_spidermonkey"
+	export LDFLAGS
+	# gyp reads AR and the _host trio straight from the environment; without
+	# them the host toolset would build native tools with the wasm compiler.
+	export AR=llvm-ar
+	export CC_host=clang CXX_host=clang++ AR_host=llvm-ar
+	# --enable-lto reaches the host toolset too, and binutils ld cannot read
+	# its bitcode here (no LLVMgold.so); lld can.
+	export LDFLAGS_host="-fuse-ld=lld"
+	# configure.py resolves each --shared-* through pkg-config, fatally for
+	# ICU. LIBDIR replaces the search path so the container's own aarch64 .pc
+	# files cannot win; SYSROOT_DIR rewrites their /usr onto the staged tree.
+	export PKG_CONFIG_LIBDIR="$srcdir/deps-staged/usr/lib/pkgconfig"
+	export PKG_CONFIG_SYSROOT_DIR="$srcdir/deps-staged"
+
+	_build
+}
+
+_build() {
+	# NOTE: We use bundled libuv because they don't care much about backward
+	# compatibility and it has happened several times in past that we
+	# couldn't upgrade nodejs package in stable branches to fix CVEs due to
+	# libuv incompatibility.
+	#
+	# NOTE: We don't package the bundled npm - it's a separate project with
+	# its own release cycle and version numbering, so it's better to keep
+	# it in a standalone aport.
+	#
+	# The last six switches are this target's. --cross-compiling stops
+	# configure running its probes; --dest-os=linux is what makes gyp pick
+	# deps/uv's linux source set, matching the -D__linux__ above;
+	# --dest-cpu=x64 is the only value whose
+	# arch flag (-m64) wasm64 accepts; --without-bundled-v8 collapses the V8
+	# build and frees the V8 include path for the shim; the inspector's other
+	# half is one of the deps/v8 targets that removes; and the snapshot is
+	# made by executing node_mksnapshot, which nothing here can run.
+	#
+	# Inert on the release path: DEV_BUILD is set only by ports/dev.sh, which
+	# keeps out/Release alive between runs. Unset, the test is always false
+	# and configure.py + gyp_node.py run exactly as they always did.
+	if [ -n "${DEV_BUILD:-}" ] && [ -f out/Release/build.ninja ] &&
+		[ -z "${DEV_RECONFIGURE:-}" ]; then
+		msg "DEV: reusing existing out/Release/build.ninja"
+		make BUILDTYPE=Release NINJA_ARGS=node
+		return 0
+	fi
+
+	python3 configure.py \
+		--prefix=/usr \
+		--use-prefix-to-find-headers \
+		--ninja \
+		--enable-lto \
+		--shared-ada \
+		--shared-brotli \
+		--shared-zlib \
+		--shared-openssl \
+		--shared-cares \
+		--shared-nghttp2 \
+		--shared-simdjson \
+		--shared-simdutf \
+		--shared-sqlite \
+		--shared-zstd \
+		--with-icu-default-data-dir="$_icu_data_dir" \
+		--with-intl=system-icu \
+		--without-corepack \
+		--without-npm \
+		--cross-compiling \
+		--dest-os=linux \
+		--dest-cpu=x64 \
+		--without-bundled-v8 \
+		--without-inspector \
+		--without-node-snapshot \
+		"$@"
+
+	# gyp takes the linker from make_global_settings and nowhere else (LD in
+	# the environment is ignored, ld defaults to $cc), and configure.py never
+	# populates it. Absolute: gyp path-joins a relative value.
+	python3 - <<-EOF
+		import json
+		p = 'config.gypi'
+		s = open(p).read()
+		i = s.index('{')
+		head, body = s[:i], json.loads(s[i:])
+		body['make_global_settings'] = [
+		    ['LD', '/usr/local/bin/reactor-link++'],
+		    ['LDXX', '/usr/local/bin/reactor-link++'],
+		]
+		open(p, 'w').write(head + json.dumps(body, indent=2) + '\n')
+	EOF
+	python3 tools/gyp_node.py --no-parallel -Dconfiguring_node=1 \
+		-Dbuild_type=Release -Dpython=/usr/bin/python3 -f ninja-linux
+
+	# NINJA_ARGS narrows aports' bare `make`: ninja's default target includes
+	# node's gtest binaries, and googletest declares an operator<< over
+	# std::wstring, which this libc++ does not have.
+	make BUILDTYPE=Release NINJA_ARGS=node
+}
+
+package() {
+	make DESTDIR="$pkgdir" install NINJA_ARGS=node
+
+	# Addons target wasm64 and link none of node's build-time settings or libs.
+	python3 - "$pkgdir"/usr/include/node/config.gypi <<-'EOF'
+		import json, sys
+		p = sys.argv[1]
+		s = open(p).read()
+		i = s.index('{')
+		head, body = s[:i], json.loads(s[i:])
+		body['variables']['target_arch'] = 'wasm64'
+		body.pop('make_global_settings', None)
+		d = body['target_defaults']
+		d['include_dirs'] = [
+		    x for x in d['include_dirs'] if '/deps-staged/' not in x]
+		d['libraries'] = [x for x in d['libraries'] if x[:2] not in ('-l', '-L')]
+		conds = []
+		for cond, branch in d.get('target_conditions', []):
+		    libs = [x for x in branch.get('libraries', [])
+		            if x[:2] not in ('-l', '-L')]
+		    if libs:
+		        branch['libraries'] = libs
+		    else:
+		        branch.pop('libraries', None)
+		    if branch:
+		        conds.append([cond, branch])
+		if conds:
+		    d['target_conditions'] = conds
+		else:
+		    d.pop('target_conditions', None)
+		out = json.dumps(body, indent=2)
+		if 'deps-staged' in out:
+		    sys.exit('config.gypi still names deps-staged')
+		open(p, 'w').write(head + out + '\n')
+	EOF
+}
+
+dev() {
+	provides="nodejs-lts-dev=$pkgver"  # for backward compatibility
+	default_dev
+}
+
+sha512sums="
+a7fead0ffffe78be8338e725bccd577d6bd083d197a7fd46dd0b912dd72c60abf90e58248c40b541479157202597618a6e2e18b26c5584449e6e86b629f5fe3c  node-v24.18.1.tar.gz
+f538042ce7830792c4aeb56e65a81c61a0accbb41794187548da40d654e284526683d920789fe88be4e57e6e61444349f42a617f0def05dd70f2394c1e64ff3b  remove-unused-openssl-config.patch
+fc795e2e61d266d286350ec3e2f7df2e3a874df60325ad11af319c376fc35a71d2c21821171ac6f02c9c9b099c1de346c7447d791b28ea16b1db2ed53c7708db  v8-ppc64le-compat.patch
+4ad794959735ad46653496e6026e6404356237a5b7c1911a5897dea6c9e1b5989e8506f0dcfc2d237f9d8d15938d6a20c05b018ccef78da043b92755b8911d10  v8-riscv-trap-handler.patch
+5cf9198a9c391248241aeb681e682d07e47500f30fd41f54970f49acbc096fdc25419f2a07d28bd701d227fd437ad669baa9d80cddf8aa5e69541697cf5b2496  v8-no-static-zlib.patch
+be11f111280f2f8af99dfdd56d23a5929bc77a19575d6166847ef31af9c1c79f65ba591644e15b95a35ff8dc763486d63b64825be71eb455eb0c90830a0c8092  v8-disable-trap-handler-on-riscv-sv39.patch
+2d8eb3297c095e361fa3c9d6711b113236adfd83a9bd44f54df5c727707c945b5eb87ff7d4fa91c1e2ba60e04839a59f6c1e376b5861d47a445000bd4ae69c4f  v8-int64-lowering-reducer.patch
+fb91dfcbc255af41c8a7a7da19f95c8b183b785ab96157940f959a688a36773922596aad789854071c1fa9608f815be8ae8259c58e1763455249038d868530be  v8-ppc_vsx-inl.patch
+30c8572aaa5c0caf53d42650ccc6dbb0614e81e709b8604ea0a592aa5ca60803bb901b94f1b1822c180cbf9c2e28c46b38d22206245b0507d320e97e5af3c9ed  node_sea.patch
+f904dd76f8e13d15b553e2b9b0226f82f108afe592b11d61118f32e9a74e4375b1146855c96fce916c662a10e7ecf3e1e30e34e924ec01eda99d74b0cc748b34  node_snapshotable.patch
+154aad01151ed789b2fdd99e216a130a1fa73111da4699e1717d8aa32ad4b654486f225e8b97ef074c4b191cf25adbc9375d1c7e2d30c97a4c10f73197c43620  0001-v8-local-handle-data-downcast.patch
+5f1f1121f5ab0aa4343a5836d6b21b211a898edcfd9b8cbb7ebea8b89fee0211e349e068d65fb7546f1a846902df5b625857befff08f0c63ed659c1cfc08ade2  0002-inspector-stub-register-func-signature.patch
+71a1cda49b266898b8c2355691ae82d25569f4aed2cf9098e8c4bb9581fb92237c5aeafecef632ad757a8fdc102802ef643d2ca58f6370b431a4a5a947f739ea  v8-use-visor-shim.patch
+510723ee414072157cb73a0578c897d1cdc1f1268f6ffdce657ed01246d5ac1a91d59c7b6fba4d7cf529b1ec5e1b99027bec5e71e5593ea6206d6f4d3c931914  node-gyp-no-latomic.patch
+8bc9ee60fefaa92cc3c37566e8f799c5dfe830224a3c90015ca43399c78b7392637638af14be8a61de566068d2264b92a86bb33e666f2acfbe557605881d9672  node-gyp-no-text-start.patch
+7b4dfaaadea387f358b3b87bb4c60b1d1b55db87739067a6b41964b908312f2ee084697035e5429963d8721a9eecfb1cb780057fbf6ae47f84e9e97ed1dad780  node-gyp-js2c-host-deps.patch
+29308481ee35242ba59b7ff020606df655de754097639b69ef79c19910776a2ecba918fd0c476b7f3df905a7a1b7401770fd77b9f76d87312c5f0a1d790ff39b  configure-shared-libs-target-only.patch
+b60ac697303ca69ae7f57cfc3bae66b5cdb6fef58ea7db4f08acc40d2dfef0f01e1145db1e7b1cf4cdffb6e412c9d6933274719311aac72e0b7e33373dae8dfc  abseil-gyp-drop-unbuildable-sources.patch
+4ca1b3351d4d6dfe245d8ff6bd9ce3eb651877f990c2c5ce86645e81b9701ce47f045f77c15e84f67f80ccbb253a1d26172ea31c7e5f29c303f6832ad5d7f2d3  abseil-config-wasm-has-mmap.patch
+950ec9bccccda51a2d9b137f71cfd12240de83e38c3b3644a95c9643fbef64b0445ada79bac60a0ff28951bec27cb0d5fad8b803dd3423e584e2316d1e810551  uv-gyp-no-x86-cpu-relax.patch
+6292d1e9e9dc3ec0e52810daaa6b7b8d4b4a4495b1a1cdb3e30ee1b90663bca1d7f1a01ebd1c4d7cca39f946daeae2bf7f05286c4964a8af65a63a54ed0ca218  uv-visorjs-spawn-primitive.patch
+695232479f40fa01b05682273aa554c6e075178843be81a226a8c498bb590592f34e7d6ad49fc712ed5e1e1dbaecbd20baa91ac9305577544baa5ea1b61c66fa  uv-guest-time-census.patch
+7cf09f5b07e64475b00e5cf6279d1a81791c0b47b13145f721ddafd0deae4fa38d5a46576cce7a862be3566498189ddf6e0b162c84d0a8d4ae39fe7dfa0a9179  uv-visorjs-fs-inline.patch
+9a9627b3edd008476be5944b98241c775e2ff2717526b3f1be9197f334bc240330872bd89ae7cc80672566e76ffed71a3188a8f5fc30f613cb4c4b2d68a35d08  node-guest-time-census.patch
+c588c279710b020d84582b030949532c049f55f3982b01fa7338107e1f8d2cd3e822521aabeac84ffa2eb5df65c7071af09967d3e780af3445359a88cd7fc7cc  node-visorjs-microtask-drain-in-callback-scope.patch
+df237099b50f705987e5faab362878872f3981e0fb858f9e13aa898f08cae3bbe63c7cb648d91930e7f0c78f24351d2c9a1d7dab428834f6bb62d7a53ef3d7ae  uv-visorjs-poll-yield.patch
+9e7d64101416ffdc24c918824d02b0ac0157a25ef62e55b77cd4a4945b5db1bcd6aee71bc7c2b9aa7c2a15e692d153946192ae39ea5bce27b6001e67d42fbc71  node-visorjs-arena-accounting.patch
+270e25d31903c5ad25522d21c9de1a8cffceb016a4b8f3a39ff6f80a9139fd969fdc647f5022e6d573045f83bf43f8379cb4b531e082eb5107d67dd94f4bf7f2  common-gypi-wasm64-addons.patch
+c3c2318153845c61910e06cb8d2a5b82534564093045b07ab79cf85be5b69419d388106b534bfd211ba86453b016e97bcc641a20902ba60510c7bfb36cc0de60  node-api-headers-emscripten-only.patch
+2105281972b5c6917489b0eb7c47048d050715d3a41280b357033f3914f598ed71bff0cb693be4583a3ee9c4bd1e63e53e43c525fd42e8d0f2b6c5052ba76d19  node-visorjs-addon-register-trampoline.patch
+69638f6e9a20e18f3bf91b185fa64592169b15dbec4f255c16f7d0e5bc120b6b309e481b7b3fee34989356b5439a1a4e8b064df32b7e690b9d8fe5112d683347  uv-visorjs-after-work-arity.patch
+05f1e54ccaf9411a13a0d15ceb912bdbd4868516a89a0ac9b5c8a6c6bbb1d3fe99510eed48ab46f8c2a7608e3abc1ab1b257184d06fa434ae8eeb30d1858fd88  node-visorjs-unwind-state.patch
+3973082fc5b1b166164312c5bdfff7a1f38609ae2bff21a4c05b1f29722696ed35c2208293334a78bc735d152835808f0f64844231451cf60e5e1a9e707f49d3  node-visorjs-wasm-dead-imports.patch
+"

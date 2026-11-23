@@ -1,0 +1,95 @@
+# Maintainer: visorjs <info@visorjs.com>
+pkgname=tzdata
+pkgver=2026c
+_ptzver=0.5
+pkgrel=8
+pkgdesc="Timezone data"
+url="https://www.iana.org/time-zones"
+arch="noarch"
+license="Public-Domain"
+subpackages="$pkgname-right $pkgname-doc $pkgname-utils::wasm64"
+options="!check !strip !archcheck"
+source="https://www.iana.org/time-zones/repository/releases/tzcode$pkgver.tar.gz
+	https://www.iana.org/time-zones/repository/releases/tzdata$pkgver.tar.gz
+	https://dev.alpinelinux.org/archive/posixtz/posixtz-$_ptzver.tar.xz
+	0001-posixtz-ensure-the-file-offset-we-pass-to-lseek-is-o.patch
+	0002-fix-implicit-declaration-warnings-by-including-strin.patch
+	"
+builddir="$srcdir"
+_timezones="africa antarctica asia australasia europe northamerica \
+	southamerica etcetera backward factory"
+
+_stage_deps() {
+	local deps="$srcdir/deps-staged"
+	apk add --root "$deps" --initdb --no-scripts --no-chown \
+		--arch "$CARCH" --keys-dir "${VISORJS_APK_KEYS:-/work/ports/keys}" \
+		--repository "$REPODEST/main" \
+		musl \
+		|| die "staging the dependency root failed"
+
+	export CFLAGS="$CFLAGS -D_GNU_SOURCE -I$deps/usr/include"
+	export CPPFLAGS="$CPPFLAGS -D_GNU_SOURCE -I$deps/usr/include"
+	export LDFLAGS="$LDFLAGS -L$deps/usr/lib"
+}
+
+build() {
+	_stage_deps
+
+	# Build host zic to compile zoneinfo on the build machine
+	make CC=gcc CFLAGS="-DHAVE_STDINT_H=1 -DHAVE_MEMPCPY=1 -DHAVE_GETTEXT=0 -DHAVE_ISSETUGID=1" \
+		LDFLAGS="" TZDIR="/usr/share/zoneinfo" version.h tzdir.h zic
+	cp zic zic.host
+	make clean_misc
+
+	# Build target wasm64 zic and zdump
+	make CC="$CC" \
+		CFLAGS="$CFLAGS -DHAVE_STDINT_H=1 -DHAVE_MEMPCPY=1 -DHAVE_GETTEXT=0 -DHAVE_ISSETUGID=1 -D_GNU_SOURCE" \
+		LDFLAGS="$LDFLAGS" TZDIR="/usr/share/zoneinfo" zic zdump
+
+	# Build target wasm64 posixtz
+	make -C "$builddir"/posixtz-$_ptzver CC="$CC" CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS" posixtz
+}
+
+utils() {
+	pkgdesc="Timezone tools (zic, zdump, posixtz)"
+	depends="musl>=1.2.6-r28"
+	amove usr/bin
+	amove usr/sbin
+}
+
+package() {
+	mkdir -p "$pkgdir"/usr/share/zoneinfo/right
+	./zic.host -b fat -d "$pkgdir"/usr/share/zoneinfo $_timezones
+	./zic.host -b fat -d "$pkgdir"/usr/share/zoneinfo/right -L leapseconds $_timezones
+
+	./zic.host -b fat -d "$pkgdir"/usr/share/zoneinfo -p America/New_York
+	install -m444 -t "$pkgdir"/usr/share/zoneinfo iso3166.tab zone1970.tab zone.tab
+
+	install -Dm755 -t "$pkgdir"/usr/sbin zic zdump
+
+	install -Dm644 -t "$pkgdir"/usr/share/man/man8 zic.8 zdump.8
+
+	rm -f "$pkgdir"/usr/share/zoneinfo/localtime
+	install -Dm755 -t "$pkgdir"/usr/bin "$srcdir"/posixtz-$_ptzver/posixtz
+
+	install -Dm644 -t "$pkgdir"/usr/share/zoneinfo "$srcdir"/leap-seconds.list
+}
+
+right() {
+	pkgdesc="Timezone data for TAI-10 system clock"
+	amove usr/share/zoneinfo/right
+}
+
+doc() {
+	default_doc
+	# The documentation is for the utils and not the main package
+	install_if="docs $pkgname-utils=$pkgver-r$pkgrel"
+}
+
+sha512sums="
+ad1aadf26b9aaca487a4f780d7a8ebf1d7383472ce587b06cb63852d4eb030dbd190b537e393e75d59530318581e9d3f492ff5f97bbac78f548d0755c4f7257f  tzcode2026c.tar.gz
+e0b4b7044b66fbc27bc21d13d18063abcdf78ab58d5ba5fd64bd1a88d86e9d495f45add4d8e65bb6c40249f9c94ca29b72c8ebba8d0e4c468f2965ac77932ef0  tzdata2026c.tar.gz
+68dbaab9f4aef166ac2f2d40b49366527b840bebe17a47599fe38345835e4adb8a767910745ece9c384b57af815a871243c3e261a29f41d71f8054df3061b3fd  posixtz-0.5.tar.xz
+2ba51889aaac9ccc8a131f9c859837bdc44ec065c883f4477056eab2055344b0e85dcde6ac2fdeb9e01128f83f338fabda930c6e504e012fbbdf97605c49c0bf  0001-posixtz-ensure-the-file-offset-we-pass-to-lseek-is-o.patch
+413a44e133f39b049316fd01566df59f57a6147a55d84079c14850d320fe2d316ba4c448cf486187467e5d136c7dd982af2eddb331faff42dd6da3971e180f0b  0002-fix-implicit-declaration-warnings-by-including-strin.patch
+"

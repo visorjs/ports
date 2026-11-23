@@ -1,0 +1,210 @@
+# Maintainer: visorjs <info@visorjs.com>
+pkgname=postgresql17
+_pkgname=postgresql
+pkgver=17.4
+_majorver=17
+pkgrel=10
+pkgdesc="A sophisticated object-relational DBMS, version $_majorver"
+url="https://www.postgresql.org/"
+arch="wasm64"
+license="PostgreSQL"
+depends="$pkgname-client musl>=1.2.6-r28 icu-libs zlib zstd-libs libcrypto3 libssl3"
+depends_dev="libpq-dev icu-dev openssl-dev zstd-dev zlib-dev readline-dev"
+makedepends="flex bison"
+subpackages="
+	$pkgname-client:client
+	$pkgname-libs:libpq
+	$pkgname-dev:libpq_dev
+	$pkgname-doc
+	"
+options="!check !strip !archcheck"
+source="https://ftp.postgresql.org/pub/source/v$pkgver/postgresql-$pkgver.tar.bz2
+	dont-use-locale-a-on-musl.patch
+	initdb.patch
+	allow-root-execution.patch
+	meson-wasm-probes.patch
+	unix_socket_directories.patch
+	visorjs-meson-module-import-provider.patch
+	"
+builddir="$srcdir/$_pkgname-$pkgver"
+
+_client_cmds="
+	clusterdb
+	createdb
+	createuser
+	dropdb
+	dropuser
+	pg_amcheck
+	pg_basebackup
+	pg_dump
+	pg_dumpall
+	pg_isready
+	pg_receivewal
+	pg_recvlogical
+	pg_restore
+	pg_verifybackup
+	pgbench
+	psql
+	reindexdb
+	vacuumdb
+	"
+
+prepare() {
+	default_prepare
+}
+
+_stage_deps() {
+	local deps="$srcdir/deps-staged"
+	apk add --root "$deps" --initdb --no-scripts --no-chown \
+		--arch "$CARCH" --keys-dir "${VISORJS_APK_KEYS:-/work/ports/keys}" \
+		--repository "$REPODEST/main" \
+		openssl-dev libcrypto3 libssl3 zlib zlib-dev zlib-static zstd-dev icu-dev \
+		readline-dev readline libhistory ncurses-dev libncursesw \
+		|| die "staging the dependency root failed"
+
+	# Generate openssl.pc if missing
+	mkdir -p "$deps/usr/lib/pkgconfig"
+	if [ ! -f "$deps/usr/lib/pkgconfig/openssl.pc" ]; then
+		cat > "$deps/usr/lib/pkgconfig/libcrypto.pc" <<-EOF
+		prefix=/usr
+		exec_prefix=\${prefix}
+		libdir=$deps/usr/lib
+		includedir=$deps/usr/include
+
+		Name: OpenSSL-libcrypto
+		Description: OpenSSL cryptography library
+		Version: 3.5.7
+		Libs: -L\${libdir} -lcrypto
+		Cflags: -I\${includedir}
+		EOF
+
+		cat > "$deps/usr/lib/pkgconfig/libssl.pc" <<-EOF
+		prefix=/usr
+		exec_prefix=\${prefix}
+		libdir=$deps/usr/lib
+		includedir=$deps/usr/include
+
+		Name: OpenSSL-libssl
+		Description: Secure Sockets Layer and cryptography libraries
+		Version: 3.5.7
+		Requires.private: libcrypto
+		Libs: -L\${libdir} -lssl
+		Cflags: -I\${includedir}
+		EOF
+
+		cat > "$deps/usr/lib/pkgconfig/openssl.pc" <<-EOF
+		prefix=/usr
+		exec_prefix=\${prefix}
+		libdir=$deps/usr/lib
+		includedir=$deps/usr/include
+
+		Name: OpenSSL
+		Description: Secure Sockets Layer and cryptography libraries and tools
+		Version: 3.5.7
+		Requires: libssl libcrypto
+		EOF
+	fi
+
+	export PKG_CONFIG_PATH="$deps/usr/lib/pkgconfig"
+	export PKG_CONFIG_LIBDIR="$deps/usr/lib/pkgconfig"
+	# The staged .pc files carry the prefix they were built with (/usr), so
+	# without a sysroot pkg-config hands meson a bare -L/usr/lib and meson
+	# resolves -lz to the BUILD CONTAINER's aarch64 /usr/lib/libz.so, which
+	# wasm-ld rejects as "unknown file type". Same as python3 and nodejs.
+	export PKG_CONFIG_SYSROOT_DIR="$deps"
+	export CFLAGS="$CFLAGS -I$deps/usr/include"
+	export CPPFLAGS="$CPPFLAGS -I$deps/usr/include"
+	export LDFLAGS="$LDFLAGS -L$deps/usr/lib"
+}
+
+build() {
+	_stage_deps
+
+	# PostgreSQL 17 natively supports Meson. We drive it using the reactor
+	# wasm64 toolchain cross-file.
+	meson setup \
+		--cross-file /work/tools/wasm-toolchain/meson/wasm64-reactor.ini \
+		--prefix=/usr \
+		--libdir=/usr/lib \
+		--buildtype=plain \
+		--wrap-mode=nodownload \
+		-Db_ndebug=true \
+		-Dssl=openssl \
+		-Dicu=enabled \
+		-Dzlib=enabled \
+		-Dzstd=enabled \
+		-Dsystem_tzdata=/usr/share/zoneinfo \
+		-Dreadline=enabled \
+		-Ddocs=disabled \
+		-Dnls=disabled \
+		-Dpam=disabled \
+		-Dgssapi=disabled \
+		-Dldap=disabled \
+		-Dbonjour=disabled \
+		-Dsystemd=disabled \
+		-Dllvm=disabled \
+		output
+	meson compile -C output
+}
+
+package() {
+	DESTDIR="$pkgdir" meson install --no-rebuild -C output
+
+	# Ensure base directories exist
+	install -d -m777 "$pkgdir"/run/postgresql
+	install -d -m750 "$pkgdir"/var/lib/postgresql \
+		"$pkgdir"/var/log/postgresql \
+		"$pkgdir"/etc/postgresql
+}
+
+client() {
+	pkgdesc="PostgreSQL client tools (psql, pg_dump, etc.)"
+	depends="musl>=1.2.6-r28 $pkgname-libs readline icu-libs zlib zstd-libs libcrypto3 libssl3"
+
+	local cmd
+	for cmd in $_client_cmds; do
+		if [ -f "$pkgdir/usr/bin/$cmd" ]; then
+			amove usr/bin/$cmd
+		fi
+	done
+}
+
+libpq() {
+	pkgdesc="PostgreSQL client libraries (libpq, libecpg)"
+	provides="libpq=$pkgver-r$pkgrel"
+	depends="musl>=1.2.6-r28 icu-libs zlib zstd-libs libcrypto3 libssl3"
+
+	amove usr/lib/libpq.so.*
+	amove usr/lib/libecpg.so.* || true
+	amove usr/lib/libpgtypes.so.* || true
+}
+
+libpq_dev() {
+	pkgdesc="PostgreSQL client development files"
+	provides="libpq-dev=$pkgver-r$pkgrel"
+	depends="$pkgname-libs=$pkgver-r$pkgrel musl>=1.2.6-r28"
+
+	if [ -f "$pkgdir/usr/bin/pg_config" ]; then
+		amove usr/bin/pg_config
+	fi
+	if [ -f "$pkgdir/usr/bin/ecpg" ]; then
+		amove usr/bin/ecpg
+	fi
+
+	amove usr/include
+	amove usr/lib/libpq.so || true
+	amove usr/lib/libecpg.so || true
+	amove usr/lib/libpgtypes.so || true
+	amove usr/lib/libpgcommon*.a || true
+	amove usr/lib/libpgport*.a || true
+	amove usr/lib/pkgconfig || true
+}
+sha512sums="
+43288a297c753d075405a7bd3fce17f6a260d6b0a80a156c1e6267e0ebd40c85b7bb929e893956a109eda4d93fa8936f43e981242c1fd67a91012cba5472026c  postgresql-17.4.tar.bz2
+90182af59c1e11b5857c47f23431fab72bb403e0acc6f9e88449349129b811d8c20c21b1c0b25f0d2a55a6f2898fb3bcf28bb4bcf91090618f4e16d56d96b215  dont-use-locale-a-on-musl.patch
+31fff28ca37f05c29be061fa95ce7870597092c71590031bf79fcc5701a35e73521924168eca2847ed770356b2d954e445e6dd780e89772dea141931ae430579  initdb.patch
+17d0ad7ea68002d97a019b7e64ef9b9941a06bc8571b3007d472e85667005cb3024d118232072b7481271229b084c9d5649b19e01122563beadefc36be2e4a62  allow-root-execution.patch
+1fe98141184ba556a5ca1270438470194520a9e1046fa6b41b49eb80d714bbcfcd6053b1d3509283d95adcdca04a498cce21822a1e592a7b195498ca744a860a  meson-wasm-probes.patch
+af5a758a6e205c970b182df3106be2e2b22541b9cb6b8d78fa48ed5798cff8153d50e2dc0cc235a44d62263bff20a8ad5d3d8b33401a2b3d92fcdce38307da59  unix_socket_directories.patch
+62762305073dc065e17c68646b38199433a5adf691bb095a7343156485332e2ffc1c52d4a3251561e63ee60e3f21e9b26c69d4d5678144e7ff428bf35a932a34  visorjs-meson-module-import-provider.patch
+"

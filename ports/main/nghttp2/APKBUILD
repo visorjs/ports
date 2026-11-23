@@ -1,0 +1,84 @@
+# Maintainer: visorjs <info@visorjs.com>
+pkgname=nghttp2
+pkgver=1.70.0
+# r1: rebuilt against a toolchain whose cmake probes no longer run under LTO.
+# The ssize_t size probe used to answer "unknown", upstream fell back to
+# `set(ssize_t int)`, and libnghttp2.so exported its ssize_t-returning API
+# with an int return. Same sources, different ABI, so the release needs its
+# own pkgrel.
+# r2: rebuilt again, for the same class of reason. -flto=auto means codegen
+# runs in wasm-ld, which was not restating the reactor codegen passes, so the
+# shipped library carried no MMU translation at all.
+pkgrel=10
+pkgdesc="HTTP/2 C client, server and proxy"
+url="https://nghttp2.org"
+arch="wasm64"
+license="MIT"
+depends="nghttp2-libs musl"
+depends_dev="$pkgname=$pkgver-r$pkgrel"
+subpackages="$pkgname-static $pkgname-doc $pkgname-dev $pkgname-libs"
+options="!check !strip !archcheck"
+source="https://github.com/nghttp2/nghttp2/releases/download/v$pkgver/nghttp2-$pkgver.tar.xz"
+
+# secfixes:
+#   1.70.0-r0:
+#     - CVE-2026-58055
+#   1.68.1-r0:
+#     - CVE-2026-27135
+#   1.57.0-r0:
+#     - CVE-2023-44487
+#   1.41.0-r0:
+#     - CVE-2020-11080
+#   1.39.2-r0:
+#     - CVE-2019-9511
+#     - CVE-2019-9513
+
+# ./configure cannot run (see ports/README.md), so this drives nghttp2's
+# own upstream CMake build instead. ENABLE_APP (nghttp/nghttpd/nghttpx/
+# h2load) is off, unlike Alpine's --enable-app: those are C++ and this
+# platform's reactor-c++ carries -fno-exceptions (libc++abi is built
+# -D_LIBCXXABI_NO_EXCEPTIONS), and src/*.cc use throw/catch, which fails
+# with "cannot use 'throw' with exceptions disabled". libev, one of the
+# apps' own required deps, also has no port here regardless. The library
+# itself is plain C with no HTTP/3, jansson, libxml2, mruby, neverbleed
+# or libbpf inputs in the tree, so those --without-* switches map onto
+# cmake's matching WITH_*/ENABLE_* options unchanged.
+build() {
+	# -20% size; clang rejects -ffat-lto-objects for wasm64.
+	export CFLAGS="$CFLAGS -flto=auto"
+	export CXXFLAGS="$CXXFLAGS -flto=auto"
+	cmake -B build -G Ninja \
+		-DCMAKE_TOOLCHAIN_FILE=/usr/local/share/reactor/cmake/wasm64-reactor.cmake \
+		-DCMAKE_BUILD_TYPE=RelWithDebInfo \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+		-DENABLE_APP=OFF \
+		-DENABLE_EXAMPLES=OFF \
+		-DENABLE_HTTP3=OFF \
+		-DENABLE_WERROR=OFF \
+		-DENABLE_DOC=OFF \
+		-DENABLE_THREADS=ON \
+		-DBUILD_SHARED_LIBS=ON \
+		-DBUILD_STATIC_LIBS=ON \
+		-DWITH_JEMALLOC=OFF \
+		-DWITH_LIBBPF=OFF \
+		-DWITH_LIBXML2=OFF \
+		-DWITH_MRUBY=OFF \
+		-DWITH_NEVERBLEED=OFF \
+		-DBUILD_TESTING="$(want_check && echo ON || echo OFF)"
+	cmake --build build
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+}
+
+libs() {
+	pkgdesc="$pkgdesc (libraries)"
+	depends="musl>=1.2.6-r28"
+	amove usr/lib/libnghttp2.so.*
+}
+
+sha512sums="
+8d8a95dcd05dfe8a032b78d99b7d32a9f0ad2c952c4548de4c6b4af0d2f3c584b0a2854b31516eca20b0c9c30f20d0d040edfe9961a3084e96353012f711b9d1  nghttp2-1.70.0.tar.xz
+"

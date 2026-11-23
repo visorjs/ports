@@ -1,0 +1,243 @@
+# Maintainer: visorjs <info@visorjs.com>
+pkgname=icu
+pkgver=78.1
+pkgrel=10
+pkgdesc="International Components for Unicode library"
+url="https://icu.unicode.org/"
+arch="wasm64"
+license="ICU"
+depends="$pkgname-libs musl>=1.2.6-r28 libcxx"
+depends_dev="$pkgname=$pkgver-r$pkgrel"
+makedepends="python3 py3-yaml"
+install="$pkgname-data-en.post-install"
+subpackages="
+	$pkgname-static
+	$pkgname-dev
+	$pkgname-doc
+	$pkgname-libs
+	$pkgname-data-en:_data_en:noarch
+	$pkgname-data-full:_data_full:noarch
+	"
+options="!check !strip !archcheck"
+source="https://github.com/unicode-org/icu/releases/download/release-$pkgver/icu4c-$pkgver-sources.tgz
+	https://github.com/unicode-org/icu/releases/download/release-$pkgver/icu4c-$pkgver-data.zip
+	https://github.com/unicode-org/icu/releases/download/release-$pkgver/icu4c-$pkgver-data-bin-b.zip
+	https://github.com/unicode-org/icu/releases/download/release-$pkgver/icu4c-$pkgver-data-bin-l.zip
+	standardize-vtzone-output.patch
+	pc.patch
+	data-filter-en.yml
+	fix-32-bit-test.patch
+	double-conversion-wasm64.patch
+	genccode-no-wasm-assembly.patch
+	pkgdata-without-assembly.patch
+	"
+builddir="$srcdir/icu/source"
+
+# secfixes:
+#   76.1-r1:
+#     - CVE-2025-5222
+#   66.1-r0:
+#     - CVE-2020-21913
+#   65.1-r1:
+#     - CVE-2020-10531
+#   57.1-r1:
+#     - CVE-2016-6293
+#   58.1-r1:
+#     - CVE-2016-7415
+#   58.2-r2:
+#     - CVE-2017-7867
+#     - CVE-2017-7868
+
+case "$CARCH" in
+	s390x|ppc64) _icudtfile=icudt${pkgver%%.*}b.dat;;
+	*) _icudtfile=icudt${pkgver%%.*}l.dat;;
+esac
+
+prepare() {
+	default_prepare
+	update_config_sub
+
+	rm -rf data
+	mv "$srcdir"/data .
+}
+
+build() {
+	_yaml2json "$srcdir"/data-filter-en.yml > data-filter-en.json
+	export ICU_DATA_FILTER_FILE="$builddir/data-filter-en.json"
+
+	case "$CARCH" in
+	armv7)
+		# bus error with -Os for some reason
+		export CFLAGS="$CFLAGS -O2"
+		export CXXFLAGS="$CXXFLAGS -O2"
+		;;
+	esac
+
+	# ICU builds its data with genrb/pkgdata/icupkg as it goes, and this
+	# target runs nothing, so a native pass produces those tools first.
+	mkdir -p "$srcdir"/native
+	cd "$srcdir"/native
+	CC=gcc CXX=g++ CFLAGS="-O1" CXXFLAGS="-O1" LDFLAGS="" \
+	"$builddir"/configure \
+		--prefix=/usr \
+		--sysconfdir=/etc \
+		--with-data-packaging=archive \
+		--disable-samples \
+		--enable-static \
+		--mandir=/usr/share/man
+	make
+	cd "$builddir"
+
+	# reactor-c++ defaults to -fno-rtti; ICU dynamic_casts unconditionally.
+	export CXXFLAGS="$CXXFLAGS -frtti"
+
+	# abuild maps no CHOST for wasm64, so --host spells out what it would be.
+	# wasm-ld rejects autoconf's `char f (void);` probe on signature
+	# mismatch, so libc functions probe backwards; the ac_cv_* answers below
+	# are what the sysroot's libc.so symbol table actually has.
+	./configure \
+		--build=$CBUILD \
+		--host=$CARCH-alpine-linux-musl \
+		--with-cross-build="$srcdir"/native \
+		--prefix=/usr \
+		--sysconfdir=/etc \
+		--with-data-packaging=archive \
+		--disable-samples \
+		--enable-static \
+		--mandir=/usr/share/man \
+		ac_cv_func_dlopen=yes \
+		ac_cv_func_gettimeofday=yes \
+		ac_cv_func_nl_langinfo=yes \
+		ac_cv_func_popen=yes \
+		ac_cv_func_pthread_mutex_lock=yes \
+		ac_cv_func_tzset=yes \
+		ac_cv_func__tzset=no \
+		ac_cv_search_dlopen="none required" \
+		ac_cv_search_pthread_mutex_destroy="none required" \
+		ac_cv_search_wcscpy="none required"
+
+	# Export what ICU's sources annotate (U_EXPORT / U_CAPI / U_COMMON_API
+	# and friends) instead of every defined symbol. --export-all names all
+	# 14,114 defined symbols across the four libraries; the annotations name
+	# 9,421, and everything the rest of the process actually imports is in
+	# that set (checked against the import sections of node and every
+	# sibling .so). The names are not free: each one is a property on the
+	# exports object every WebAssembly.Instance materialises, and the guest
+	# builds 21 instances per launch, several launches per exec.
+	#
+	# LD_SOOPTIONS rather than LDFLAGS: ICU threads it onto the shared
+	# library link lines only, so the tools built alongside — executables,
+	# which annotate nothing and would link with no ABI — keep the blanket
+	# posture. Its default value is restated because a make-line assignment
+	# replaces it.
+	#
+	# The named extras are the symbols consumers import today that the
+	# annotations do not cover: implicit instantiations of UnicodeString's
+	# character-array constructor template, a few header-inline methods, and
+	# libc++ internals ICU re-emits. Most would resolve against a consumer's
+	# own copy once it relinks, but --export-if-defined costs nothing and a
+	# missing data symbol degrades to a null stub rather than a link error.
+	_annotated_extras=$(for _sym in \
+		_ZN6icu_7813UnicodeString8truncateEi \
+		_ZN6icu_7813UnicodeStringC2IA10_DsvEERKT_ \
+		_ZN6icu_7813UnicodeStringC2IA12_DsvEERKT_ \
+		_ZN6icu_7813UnicodeStringC2IA13_DsvEERKT_ \
+		_ZN6icu_7813UnicodeStringC2IA14_DsvEERKT_ \
+		_ZN6icu_7813UnicodeStringC2IA16_DsvEERKT_ \
+		_ZN6icu_7813UnicodeStringC2IA19_DsvEERKT_ \
+		_ZN6icu_7813UnicodeStringC2IA28_DsvEERKT_ \
+		_ZN6icu_7813UnicodeStringC2IA4_DsvEERKT_ \
+		_ZN6icu_7813UnicodeStringC2IA6_DsvEERKT_ \
+		_ZN6icu_7813UnicodeStringC2IA8_DsvEERKT_ \
+		_ZN6icu_7813UnicodeStringC2IA9_DsvEERKT_ \
+		_ZN6icu_7813UnicodeStringC2IPKDsvEERKT_ \
+		_ZN6icu_786Locale15setKeywordValueEPKcS2_R10UErrorCode \
+		_ZN6icu_789Hashtable3putERKNS_13UnicodeStringEPvR10UErrorCode \
+		_ZN6icu_789UVector3210addElementEiR10UErrorCode \
+		_ZNK6icu_7813UnicodeString7compareENS_14ConstChar16PtrEi \
+		_ZNK6icu_7813UnicodeStringeqERKS0_ \
+		_ZNK6icu_7813UnicodeStringneERKS0_ \
+		_ZNK6icu_7815Normalizer2Impl8getFCD16Ei \
+		_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE20__throw_length_errorB8nn210108Ev \
+		_ZNSt3__116__pad_and_outputB8nn210108IcNS_11char_traitsIcEEEENS_19ostreambuf_iteratorIT_T0_EES6_PKS4_S8_S8_RNS_8ios_baseES4_ \
+		_ZNSt3__120__throw_length_errorB8nn210108EPKc \
+		; do printf ' --export-extra=%s' "$_sym"; done)
+
+	make LD_SOOPTIONS="-Wl,-Bsymbolic --export-set=annotated$_annotated_extras"
+}
+
+package() {
+	make DESTDIR="$pkgdir" install
+
+	install -Dm644 "$srcdir"/icu/license.html -t "$pkgdir"/usr/share/licenses/icu/
+}
+
+dev() {
+	default_dev
+	depends="$depends_dev musl>=1.2.6-r28 libcxx"
+
+	amove usr/lib/icu
+	amove usr/lib/libicutest.so.*
+	amove usr/share/icu/*/LICENSE
+	amove usr/share/icu/*/config
+	amove usr/share/icu/*/install-sh
+	amove usr/share/icu/*/mkinstalldirs
+}
+
+libs() {
+	pkgdesc="$pkgdesc (libraries)"
+	depends="$pkgname-data=$pkgver-r$pkgrel musl>=1.2.6-r28 libcxx"
+	replaces="icu"
+
+	# Data stub required by the Common and I18n libraries.
+	amove usr/lib/libicudata.so.[0-9]*
+	# A library that contains many locale based internationalization (i18n) functions.
+	amove usr/lib/libicui18n.so.[0-9]*
+	# An optional library that provides a stdio like API with Unicode support.
+	amove usr/lib/libicuio.so.[0-9]*
+	# Base library required by all other ICU libraries.
+	amove usr/lib/libicuuc.so.[0-9]*
+
+	# An internal library that contains internal APIs that are only used by ICU’s tools.
+	# Keep in the base package.
+	#amove usr/lib/libicutu.so.[0-9]*
+}
+
+_data_en() {
+	pkgdesc="Stripped down ICU data with only en_US/GB locale and no legacy charset converters"
+	provides="$pkgname-data=$pkgver-r$pkgrel"
+	provider_priority=100  # highest (other provider is icu-data-full)
+	replaces="$pkgname-data<71.1-r1"
+	# The data is what icu-libs depends on; inheriting its depends would loop.
+	depends=""
+
+	amove usr/share/icu/$pkgver/$_icudtfile
+}
+
+_data_full() {
+	pkgdesc="Full ICU data"
+	provides="$pkgname-data=$pkgver-r$pkgrel"
+	provider_priority=10  # lowest (other provider is icu-data-en)
+	replaces="$pkgname-data<71.1-r1"
+	depends=""
+
+	install -D -m644 "$srcdir"/$_icudtfile -t "$subpkgdir"/usr/share/icu/$pkgver/
+}
+
+_yaml2json() {
+	python3 -c 'import sys, yaml, json; json.dump(yaml.safe_load(sys.stdin), sys.stdout)' <"$1"
+}
+
+sha512sums="
+c366398fdb50afc6355a8c45ed1d68a18eaa5f07a5d1c4555becbcfb9d4073e65ebe1e9caf24b93779b11b36cd813c98dd59e4b19f008851f25c7262811c112d  icu4c-78.1-sources.tgz
+74c314148e9f65d304341457c574f26ac5cc80b518df5d7bb04fe94f890a2fadd8ffbd5cd0e6e305e32e384c07f558befb7eae061232c1b4d0e0bec48ea62b2e  icu4c-78.1-data.zip
+7f38983815df4248c34ed5fae2a310d959c5408d2213f9d5f043f5f724fe34e9c9064f320b33dbc3b4c353173d90c297626aef1d6b6b1735e6887194db4c0582  icu4c-78.1-data-bin-b.zip
+bac376c4f3f3d9a2cdf05ec8ae6b95697bf00f86bd41b652258f088503a239bc458a4e3fd5e0eed0dfc449de83266c610c5057e300c924ba54f8b23befa514fb  icu4c-78.1-data-bin-l.zip
+c76fd529f92a7b27a45a307c8bb91c109910d012478414b08983af3320e29fbe76e03d8434c4efbde68ecaa56a86130d6514428c5a1085985634bc3650e8e96e  standardize-vtzone-output.patch
+c42817874c7ec659295d0b4f4058458deea1b78cd0e690bcab4f5affe5edb258e510fcf1cce0586c86ea2ec342feb4d57c9357fc148259ee979257ea26c7aa84  pc.patch
+609541c1ac10c12b2b52f7800a2057d5c97e49dc9a1774a1b53e13d88599128baa7637f1a63b4de52dfe58b1038c7f3462ef29ad223dbe2ecb2862e3249a1cf4  data-filter-en.yml
+c01ca145954a1eab3f2d371550c580f9f7ce96b6858de1360cb5cc157fd4b1af22ed1b32d9515a22055686cf5968aee113981e33412ed3dc8a52b2eedda8e216  fix-32-bit-test.patch
+d3ebfeef1c4318b362a8ecbdae1cb34527504e79a48f9e9d35c27fd334f2c83e68b9d912bf10276b926a349fc0e94f43b609c691928312305bb2e7a6d431d807  double-conversion-wasm64.patch
+7fab670f6a9e13ca3ed01542e5c38611ca6b54a6b843c90b7141daea998c4fdfb36d1a7730d53a3c6f41676d43c5adf7427a1658e702c9ccb63fd771194f71e7  genccode-no-wasm-assembly.patch
+aa8279f13f3265c6a32846df9b15d45bfcde0e93f9134369690baff8103d776b4ecf61809e602c82b516ee764ecf9f8392c6683aa50b37e5785a3596096759ab  pkgdata-without-assembly.patch
+"

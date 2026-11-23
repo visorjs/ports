@@ -1,0 +1,89 @@
+# wasm call_indirect traps on a signature mismatch: an addon entry point declared with fewer parameters than NODE_MODULE casts it to is registered through an exactly-typed trampoline that forwards the leading arguments.
+--- a/src/node.h
++++ b/src/node.h
+@@ -82,6 +82,12 @@
+ #include <memory>
+ #include <optional>
+ #include <ostream>
++#if defined(__wasm__)
++#include <cstddef>
++#include <cstring>
++#include <tuple>
++#include <utility>
++#endif
+ 
+ // We cannot use __POSIX__ in this header because that's only defined when
+ // building Node.js.
+@@ -1333,6 +1339,52 @@
+ };
+ 
+ extern "C" NODE_EXTERN void node_module_register(void* mod);
++
++#if defined(__wasm__)
++// wasm traps a call through a mistyped pointer: enter via an exact trampoline.
++namespace visorjs_addon {
++template <typename To, typename From>
++inline To Arg(From from) {
++  static_assert(sizeof(To) == sizeof(From), "addon entry parameter size");
++  To to;
++  std::memcpy(static_cast<void*>(&to), &from, sizeof(to));
++  return to;
++}
++
++template <typename R, typename... A, typename T, std::size_t... I>
++inline void ApplyN(R (*fn)(A...), const T& args, std::index_sequence<I...>) {
++  fn(Arg<A>(std::get<I>(args))...);
++}
++
++template <typename R, typename... A, typename T>
++inline void Apply(R (*fn)(A...), const T& args) {
++  ApplyN(fn, args, std::index_sequence_for<A...>());
++}
++
++template <auto fn>
++void Register(v8::Local<v8::Object> exports,
++              v8::Local<v8::Value> module,
++              void* priv) {
++  Apply(fn, std::make_tuple(exports, module, priv));
++}
++
++template <auto fn>
++void RegisterContext(v8::Local<v8::Object> exports,
++                     v8::Local<v8::Value> module,
++                     v8::Local<v8::Context> context,
++                     void* priv) {
++  Apply(fn, std::make_tuple(exports, module, context, priv));
++}
++}  // namespace visorjs_addon
++
++#define NODE_VISORJS_REGISTER_FUNC(regfunc)                           \
++  (&node::visorjs_addon::Register<regfunc>)
++#define NODE_VISORJS_CONTEXT_REGISTER_FUNC(regfunc)                   \
++  (&node::visorjs_addon::RegisterContext<regfunc>)
++#else
++#define NODE_VISORJS_REGISTER_FUNC(regfunc) (regfunc)
++#define NODE_VISORJS_CONTEXT_REGISTER_FUNC(regfunc) (regfunc)
++#endif
+ 
+ #ifdef _WIN32
+ # define NODE_MODULE_EXPORT __declspec(dllexport)
+@@ -1369,7 +1421,8 @@
+       flags,                                                          \
+       NULL,  /* NOLINT (readability/null_usage) */                    \
+       __FILE__,                                                       \
+-      (node::addon_register_func) (regfunc),                          \
++      (node::addon_register_func)                                     \
++          NODE_VISORJS_REGISTER_FUNC(regfunc),                        \
+       NULL,  /* NOLINT (readability/null_usage) */                    \
+       NODE_STRINGIFY(modname),                                        \
+       priv,                                                           \
+@@ -1389,7 +1442,8 @@
+       NULL,  /* NOLINT (readability/null_usage) */                    \
+       __FILE__,                                                       \
+       NULL,  /* NOLINT (readability/null_usage) */                    \
+-      (node::addon_context_register_func) (regfunc),                  \
++      (node::addon_context_register_func)                             \
++          NODE_VISORJS_CONTEXT_REGISTER_FUNC(regfunc),                \
+       NODE_STRINGIFY(modname),                                        \
+       priv,                                                           \
+       NULL  /* NOLINT (readability/null_usage) */                     \

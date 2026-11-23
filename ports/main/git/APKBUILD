@@ -1,0 +1,99 @@
+# Maintainer: visorjs <info@visorjs.com>
+pkgname=git
+pkgver=2.55.0
+pkgrel=8
+pkgdesc="Distributed version control system"
+url="https://www.git-scm.com/"
+arch="wasm64"
+license="GPL-2.0-only"
+depends="ca-certificates-bundle curl libcurl musl>=1.2.6-r28 zlib"
+depends_dev="
+	curl-dev
+	openssl-dev
+	zlib-dev
+	$pkgname=$pkgver-r$pkgrel
+	"
+subpackages="$pkgname-bash-completion $pkgname-prompt::noarch $pkgname-daemon"
+options="!check !strip !archcheck"
+source="https://www.kernel.org/pub/software/scm/git/git-$pkgver.tar.xz"
+
+_gitcoredir=usr/libexec/git-core
+
+_stage_deps() {
+	local deps="$srcdir/deps-staged"
+	apk add --root "$deps" --initdb --no-scripts --no-chown \
+		--arch "$CARCH" --keys-dir "${VISORJS_APK_KEYS:-/work/ports/keys}" \
+		--repository "$REPODEST/main" \
+		musl zlib zlib-dev openssl-dev libcrypto3 libssl3 \
+		curl curl-dev libcurl pkgconf ca-certificates linux-headers \
+		|| die "staging the dependency root failed"
+
+	export PKG_CONFIG_PATH="$deps/usr/lib/pkgconfig:$deps/usr/share/pkgconfig"
+	export PKG_CONFIG_LIBDIR="$deps/usr/lib/pkgconfig:$deps/usr/share/pkgconfig"
+	export CFLAGS="$CFLAGS -I$deps/usr/include"
+	export CPPFLAGS="$CPPFLAGS -I$deps/usr/include"
+	export LDFLAGS="$LDFLAGS -L$deps/usr/lib"
+	_deps="$deps"
+}
+
+build() {
+	_stage_deps
+
+	cat > config.mak <<-EOF
+		NO_GETTEXT=YesPlease
+		NO_SVN_TESTS=YesPlease
+		NO_REGEX=YesPlease
+		NO_SYS_POLL_H=1
+		ICONV_OMITS_BOM=Yes
+		INSTALL_SYMLINKS=1
+		CC=$CC
+		AR=llvm-ar
+		CFLAGS=$CFLAGS
+		LDFLAGS=$LDFLAGS
+		CURL_CONFIG=$_deps/usr/bin/curl-config
+		NO_PYTHON=YesPlease
+		NO_TCLTK=YesPlease
+		NO_PERL=YesPlease
+		NO_RUST=YesPlease
+		NO_EXPAT=YesPlease
+		NO_LIBPCRE2=YesPlease
+		HOST_CPU=wasm64
+		undefine FSMONITOR_DAEMON_BACKEND
+		undefine FSMONITOR_OS_SETTINGS
+	EOF
+
+	make prefix=/usr all
+}
+
+package() {
+	make prefix=/usr DESTDIR="$pkgdir" install
+
+	mkdir -p "$pkgdir"/var/git
+
+	install -Dm644 contrib/completion/git-prompt.sh \
+		"$pkgdir"/usr/share/git-core/git-prompt.sh
+
+	install -Dm644 contrib/completion/git-completion.bash \
+		"$pkgdir"/usr/share/bash-completion/completions/git
+}
+
+prompt() {
+	pkgdesc="bash and zsh prompt integration for Git"
+	depends="git=$pkgver-r$pkgrel"
+
+	amove usr/share/git-core/git-prompt.sh
+}
+
+daemon() {
+	pkgdesc="Git protocol daemon"
+	depends="git=$pkgver-r$pkgrel musl>=1.2.6-r28"
+
+	amove $_gitcoredir/git-daemon
+	amove $_gitcoredir/git-http-backend
+	amove $_gitcoredir/git-shell
+	amove var/git
+}
+
+sha512sums="
+73a53e5e79e9c357884512ad9fe5788ce48c33fd7ebb49f7c68f63c872beb5c5766f4fd1a9d9a2d8c89c192dc801ac7339422e9eec644ada56215fe9803af741  git-2.55.0.tar.xz
+"

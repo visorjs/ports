@@ -1,0 +1,261 @@
+# Maintainer: visorjs <info@visorjs.com>
+pkgname=util-linux
+pkgver=2.42.2
+pkgrel=8
+pkgdesc="Random collection of Linux utilities"
+url="https://git.kernel.org/cgit/utils/util-linux/util-linux.git"
+arch="wasm64"
+license="GPL-3.0-or-later AND GPL-2.0-or-later AND GPL-2.0-only AND
+	BSD-4-Clause-UC AND ISC AND LGPL-2.1-or-later AND MIT AND
+	BSD-3-Clause AND BSD-2-Clause AND Public-Domain"
+
+# wasm64: SCOPE. This recipe builds util-linux's uuid library and uuidgen
+# ONLY, via upstream's own --disable-all-programs plus --enable-libuuid /
+# --enable-uuidgen. It is not a partial or crippled build of the aport:
+# those are supported upstream configurations, and every other component
+# is switched off at configure time rather than deleted afterwards.
+#
+# What aports ships that this does NOT, and why — none of it is a
+# judgement call about usefulness, all of it is a facility the visorjs
+# kernel does not have:
+#   libblkid, libfdisk, libmount, blkid, cfdisk, sfdisk, partx, lsblk,
+#     losetup, wipefs, mount, umount, fstrim  — block devices, partition
+#     tables and the mount table. There is no block layer; the VFS is
+#     TypeScript and mounts are kernel-internal.
+#   agetty, setarch, setpriv, dmesg, lscpu, runuser, util-linux-login,
+#     liblastlog2, util-linux-openrc  — tty spawning, personality(2),
+#     the kernel ring buffer, /proc/cpuinfo topology, PAM, an init system.
+#   py3-libmount  — bindings for libmount, absent above.
+#   libsmartcols, hexdump, logger, flock, mcookie  — buildable in
+#     principle, but they belong to a full util-linux port rather than to
+#     this one, whose reason to exist is libuuid for python3-extra's
+#     _uuid module.
+# Widening this recipe later means turning switches back on here, not
+# rewriting it.
+subpackages="libuuid:_libuuid $pkgname-dev $pkgname-doc"
+
+# wasm64: aports leaves the runtime edges to tracedeps, which adds no musl
+# floor.
+depends="musl>=1.2.6-r28 libuuid=$pkgver-r$pkgrel"
+depends_dev="libuuid=$pkgver-r$pkgrel"
+options="!check !strip !archcheck"
+
+case $pkgver in
+	*.*.*) _v=${pkgver%.*};;
+	*.*) _v=$pkgver;;
+esac
+source="https://www.kernel.org/pub/linux/utils/util-linux/v$_v/util-linux-$pkgver.tar.xz"
+
+# libtool -version-info, read from configure.ac rather than guessed:
+# LIBUUID_LT_MAJOR=1 MINOR=3 MICRO=0 gives version-info (1+3):0:3 = 4:0:3,
+# so soname libuuid.so.1 and real file libuuid.so.1.3.0. Recompute on a
+# version bump.
+_sover=1
+_solibver=1.3.0
+
+_stage_deps() {
+	local deps="$srcdir/deps-staged"
+	apk add --root "$deps" --initdb --no-scripts --no-chown \
+		--arch "$CARCH" --keys-dir "${VISORJS_APK_KEYS:-/work/ports/keys}" \
+		--repository "$REPODEST/main" \
+		musl linux-headers pkgconf \
+		|| die "staging the dependency root failed"
+
+	export PKG_CONFIG_PATH="$deps/usr/lib/pkgconfig:$deps/usr/share/pkgconfig"
+	export PKG_CONFIG_LIBDIR="$deps/usr/lib/pkgconfig:$deps/usr/share/pkgconfig"
+	export CPPFLAGS="$CPPFLAGS -I$deps/usr/include"
+	export LDFLAGS="$LDFLAGS -L$deps/usr/lib"
+	_deps="$deps"
+}
+
+build() {
+	_stage_deps
+
+	./configure \
+		--build=$CBUILD \
+		--host=$CARCH-alpine-linux-musl \
+		--prefix=/usr \
+		--libdir=/usr/lib \
+		--disable-silent-rules \
+		--disable-all-programs \
+		--enable-libuuid \
+		--enable-uuidgen \
+		--disable-uuidd \
+		--disable-nls \
+		--disable-asciidoc \
+		--without-python \
+		--without-econf \
+		--without-systemd \
+		--without-udev \
+		--disable-shared \
+		--enable-static \
+		ac_cv_func___fpending=yes \
+		ac_cv_func___fpurge=yes \
+		ac_cv_func___secure_getenv=no \
+		ac_cv_func_cachestat=no \
+		ac_cv_func_clearenv=yes \
+		ac_cv_func_clock_gettime=yes \
+		ac_cv_func_close_range=no \
+		ac_cv_func_copy_file_range=yes \
+		ac_cv_func_dirfd=yes \
+		ac_cv_func_eaccess=no \
+		ac_cv_func_err=yes \
+		ac_cv_func_errx=yes \
+		ac_cv_func_explicit_bzero=yes \
+		ac_cv_func_fallocate=yes \
+		ac_cv_func_fnmatch=yes \
+		ac_cv_func_fpurge=yes \
+		ac_cv_func_fsconfig=no \
+		ac_cv_func_fsmount=no \
+		ac_cv_func_fsopen=no \
+		ac_cv_func_fspick=no \
+		ac_cv_func_fstatat=yes \
+		ac_cv_func_fsync=yes \
+		ac_cv_func_fts_open=no \
+		ac_cv_func_futimens=yes \
+		ac_cv_func_getauxval=yes \
+		ac_cv_func_getdomainname=yes \
+		ac_cv_func_getdtablesize=no \
+		ac_cv_func_getexecname=no \
+		ac_cv_func_getmntinfo=no \
+		ac_cv_func_getrandom=yes \
+		ac_cv_func_getrlimit=yes \
+		ac_cv_func_getsgnam=no \
+		ac_cv_func_getttynam=no \
+		ac_cv_func_getusershell=yes \
+		ac_cv_func_inotify_init=yes \
+		ac_cv_func_inotify_init1=yes \
+		ac_cv_func_ioperm=no \
+		ac_cv_func_iopl=no \
+		ac_cv_func_isnan=no \
+		ac_cv_func_jrand48=yes \
+		ac_cv_func_landlock_add_rule=no \
+		ac_cv_func_landlock_create_ruleset=no \
+		ac_cv_func_landlock_restrict_self=no \
+		ac_cv_func_lchown=yes \
+		ac_cv_func_lgetxattr=yes \
+		ac_cv_func_llistxattr=yes \
+		ac_cv_func_llseek=no \
+		ac_cv_func_mempcpy=yes \
+		ac_cv_func_mkostemp=yes \
+		ac_cv_func_mount_setattr=no \
+		ac_cv_func_move_mount=no \
+		ac_cv_func_nanosleep=yes \
+		ac_cv_func_newlocale=yes \
+		ac_cv_func_ntp_gettime=no \
+		ac_cv_func_open_memstream=yes \
+		ac_cv_func_open_tree=no \
+		ac_cv_func_openat=yes \
+		ac_cv_func_personality=yes \
+		ac_cv_func_pidfd_getfd=no \
+		ac_cv_func_pidfd_open=no \
+		ac_cv_func_pidfd_send_signal=no \
+		ac_cv_func_posix_fadvise=yes \
+		ac_cv_func_posix_fallocate=yes \
+		ac_cv_func_prctl=yes \
+		ac_cv_func_qsort_r=yes \
+		ac_cv_func_reallocarray=yes \
+		ac_cv_func_reboot=yes \
+		ac_cv_func_renameat2=no \
+		ac_cv_func_rpmatch=no \
+		ac_cv_func_scandirat=no \
+		ac_cv_func_sched_setattr=no \
+		ac_cv_func_sched_setscheduler=yes \
+		ac_cv_func_secure_getenv=no \
+		ac_cv_func_security_get_initial_context=no \
+		ac_cv_func_sem_close=yes \
+		ac_cv_func_sendfile=yes \
+		ac_cv_func_setitimer=yes \
+		ac_cv_func_setprogname=no \
+		ac_cv_func_setresgid=yes \
+		ac_cv_func_setresuid=yes \
+		ac_cv_func_shm_open=yes \
+		ac_cv_func_sigqueue=yes \
+		ac_cv_func_srandom=yes \
+		ac_cv_func_statx=yes \
+		ac_cv_func_strnchr=no \
+		ac_cv_func_strndup=yes \
+		ac_cv_func_strnlen=yes \
+		ac_cv_func_strtod_l=yes \
+		ac_cv_func_swapoff=yes \
+		ac_cv_func_swapon=yes \
+		ac_cv_func_sysconf=yes \
+		ac_cv_func_sysinfo=yes \
+		ac_cv_func_timegm=yes \
+		ac_cv_func_timer_create=yes \
+		ac_cv_func_unlinkat=yes \
+		ac_cv_func_updwtmpx=yes \
+		ac_cv_func_uselocale=yes \
+		ac_cv_func_usleep=yes \
+		ac_cv_func_utimensat=yes \
+		ac_cv_func_vwarnx=yes \
+		ac_cv_func_warn=yes \
+		ac_cv_func_warnx=yes
+
+	# aports passes --host=$CHOST; ports/abuild.conf leaves CHOST unset, so
+	# the triplet is spelled from $CARCH, as every autotools recipe here does.
+	#
+	# wasm64 divergences beyond the scoping switches documented above:
+	#   --disable-shared --enable-static  libtool cannot link a wasm shared
+	#     object (the finding libunistring, xz and gdbm already record
+	#     here), so it is never asked to; libuuid.so.1 is linked out of the
+	#     archive it did produce, below.
+	#   --disable-asciidoc  aports builds man pages with asciidoctor, a
+	#     build-host tool this image does not carry; the tarball ships
+	#     pre-generated pages.
+	#   --disable-nls  no libintl runtime on this platform.
+	#   --without-systemd --without-udev --without-econf --without-python
+	#     are aports' own bootstrap settings, which is the configuration
+	#     this tree matches.
+	# The ac_cv_func_* table answers every AC_CHECK_FUNCS probe in
+	# configure.ac. wasm-ld rejects autoconf's `char f (void);` declaration
+	# on signature mismatch against libc.so, so each one would otherwise
+	# answer "no" — and util-linux turns several of those answers into a
+	# hard #error (include/c.h wants usleep or nanosleep) or into a
+	# conflicting static fallback definition (reallocarray, fsync). Every
+	# value was resolved against the wasm64 sysroot's actual exports
+	# (llvm-nm --defined-only on libc.so), not guessed: 64 present, 38
+	# absent. The absent ones are real — mount/fsopen/open_tree, landlock,
+	# pidfd, ioperm/iopl and the BSD/Solaris spellings — none of which this
+	# scoped build compiles anyway.
+
+	sed -i \
+		-e 's|^hardcode_libdir_flag_spec=.*|hardcode_libdir_flag_spec=""|g' \
+		-e 's|^runpath_var=LD_RUN_PATH|runpath_var=DIE_RPATH_DIE|g' \
+		libtool
+	make
+
+	# The shared library aports gets from libtool.
+	$LD --entry-shape=shared --soname libuuid.so.$_sover \
+		-Wl,--whole-archive .libs/libuuid.a -Wl,--no-whole-archive \
+		"$REACTOR_SYSROOT/lib/libc.so" \
+		-o .libs/libuuid.so.$_solibver
+}
+
+# wasm64: aports' check() is dropped — options="!check" everywhere in this
+# tree, because the build container cannot execute a wasm64 binary.
+
+package() {
+	make DESTDIR="$pkgdir" install
+
+	# --disable-shared means `make install` laid down no shared library;
+	# put the hand-linked one and the symlinks libtool would have made in
+	# place by hand, as xz and gdbm do here.
+	install -D -m755 .libs/libuuid.so.$_solibver \
+		"$pkgdir"/usr/lib/libuuid.so.$_solibver
+	ln -s libuuid.so.$_solibver "$pkgdir"/usr/lib/libuuid.so.$_sover
+	ln -s libuuid.so.$_solibver "$pkgdir"/usr/lib/libuuid.so
+}
+
+_libuuid() {
+	license="BSD-3-Clause"
+	pkgdesc="DCE compatible Universally Unique Identifier library"
+	# wasm64: aports' _mv_lib sets depends= empty and lets tracedeps fill
+	# it in; the musl floor is a version tracedeps cannot add.
+	depends="musl>=1.2.6-r28"
+	amove usr/lib/libuuid.so.*
+}
+
+sha512sums="
+7415add0be2930654e322830808dde03ff6d511bd357f0679e6b6287a13ca79fe58ce4ac05edef86b76fb381b3a36ca2da9d3c31b5dc0a1d889c203156a57277  util-linux-2.42.2.tar.xz
+"

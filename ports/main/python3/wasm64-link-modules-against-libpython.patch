@@ -1,0 +1,47 @@
+Link shared extension modules against libpython on wasm64.
+
+Upstream leaves LIBPYTHON empty on most platforms because ELF resolves an
+extension module's Python symbols at dlopen time against the already-loaded
+libpython (or the main executable). wasm has no such deferred resolution:
+every import of a shared module must be satisfied by a module named on its
+own link line, and the reactor toolchain's check-unresolved rejects a module
+that links with unresolved env imports.
+
+wasm64 therefore belongs in the same class as Android and Cygwin, which
+upstream already handles here: MODULE_DEPS_SHARED gains $(LDLIBRARY) so
+libpython3.14.so is built before any module links, and LIBPYTHON becomes
+-lpython3.14 so MODULE_LDFLAGS_SHARED expands to $(BLDLIBRARY). Setting
+LIBPYTHON rather than patching the link rules also keeps python-config,
+python3.pc and sysconfig correct, so extension modules built later by pip
+against the installed interpreter get the same link line.
+
+--- a/configure.ac
++++ b/configure.ac
+@@ -6466,7 +6466,11 @@
+ # LIBPYTHON is used by python-config, python3.pc, the commands for building the
+ # stdlib's own extension modules, and external package build systems via
+ # sysconfig, so its value must be suitable for all those contexts.
+-if test "$PY_ENABLE_SHARED" = "1" && ( test -n "$ANDROID_API_LEVEL" || test "$MACHDEP" = "cygwin"); then
++# wasm has no dlopen-time symbol resolution against the loaded interpreter, so
++# wasm64 needs the same treatment.
++if test "$PY_ENABLE_SHARED" = "1" && ( test -n "$ANDROID_API_LEVEL" \
++  || test "$MACHDEP" = "cygwin" \
++  || test "$host_cpu" = "wasm64" ); then
+   MODULE_DEPS_SHARED="$MODULE_DEPS_SHARED \$(LDLIBRARY)"
+   LIBPYTHON="-lpython${VERSION}${ABIFLAGS}"
+ fi
+--- a/configure
++++ b/configure
+@@ -26987,7 +26987,11 @@
+ # LIBPYTHON is used by python-config, python3.pc, the commands for building the
+ # stdlib's own extension modules, and external package build systems via
+ # sysconfig, so its value must be suitable for all those contexts.
+-if test "$PY_ENABLE_SHARED" = "1" && ( test -n "$ANDROID_API_LEVEL" || test "$MACHDEP" = "cygwin"); then
++# wasm has no dlopen-time symbol resolution against the loaded interpreter, so
++# wasm64 needs the same treatment.
++if test "$PY_ENABLE_SHARED" = "1" && ( test -n "$ANDROID_API_LEVEL" \
++  || test "$MACHDEP" = "cygwin" \
++  || test "$host_cpu" = "wasm64" ); then
+   MODULE_DEPS_SHARED="$MODULE_DEPS_SHARED \$(LDLIBRARY)"
+   LIBPYTHON="-lpython${VERSION}${ABIFLAGS}"
+ fi

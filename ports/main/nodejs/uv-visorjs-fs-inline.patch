@@ -1,0 +1,462 @@
+Run the fs requests that cannot be cancelled anyway on the loop thread, and
+deliver their completions from the pending phase, one batch per loop turn.
+
+The threadpool exists to keep a blocking disk from stalling the event loop.
+Here there is no disk: every fs syscall is answered by the Sentry in
+microseconds, on the same thread the caller is already on. Paying a threadpool
+round trip for that costs a measured 304 us per async lstat against 47 us for
+the synchronous one -- five extra kernel crossings per request (two futex, an
+epoll wait, an eventfd write, a drain read) and a wait in uv__io_poll that on a
+tar extract of one npm package adds up to seven seconds of idle JS thread.
+
+So POST grows a third arm. For an eligible request it runs uv__fs_work on this
+thread and then publishes the struct uv__work in exactly the state a worker
+thread would have left it in -- work == NULL, queued on the tail of loop->wq
+under loop->wq_mutex -- so uv__work_done, uv__fs_done and everything above them
+run unchanged and do not know which thread did the work.
+
+What it does not do is call the callback. node's AsyncDestCall touches the
+FSReqBase after ReqWrap::Dispatch returns, so a callback that ran inside
+uv_fs_lstat() would see a half-built wrap; the guarantee that no user code runs
+before the submitting call returns is load-bearing above libuv, not an
+implementation detail of the pool.
+
+Nor does it call uv_async_send(). That function's eventfd write exists to
+interrupt a uv__io_poll() sleeping on another thread, and there is no other
+thread here: the write and the epoll wake it buys would both be paid on the
+loop thread with nothing offloaded in exchange. Measured, that arm is slower
+than the threadpool it replaces (a serial async lstat: 327.7 us against the
+pool's 294.3 us). What replaces it is a plain counter,
+uv__loop_internal_fields_t::inline_pending, incremented under nothing in
+particular because only the loop thread ever touches it, and read in two
+places in unix/core.c:
+
+  - uv__backend_timeout() returns 0 while it is non-zero, so uv__io_poll()
+    polls and does not sleep on a completion that is already sitting on
+    loop->wq. This is the pending_queue test beside it, for a queue
+    uv__io_poll() cannot see.
+  - uv_run() clears it and calls uv__work_done(&loop->wq_async) immediately
+    after uv__run_pending(), in the pending phase, before idle, prepare and
+    the poll.
+
+The counter is cleared *before* uv__work_done() runs, and that is the whole
+design. uv__work_done() drains everything sitting on loop->wq, so a turn
+delivers a batch and not a single completion; what the early clear guarantees
+is that a request submitted inline from inside a completion callback re-arms
+the counter and always lands in the *next* batch, delivered by the next turn's
+pending phase rather than the rest of this one -- so a chain of dependent fs
+requests costs one batch per turn, with a callback-submitted request always in
+the following one, and with uv__run_check() and every setImmediate in it
+running between each pair, exactly as it does when a worker thread services
+the chain.
+
+Feeding loop->async_io_watcher with uv__io_feed() instead would not hold that
+line: uv_run() re-runs uv__run_pending() up to eight more times after
+uv__io_poll() returns, so a completion fed from inside a callback is drained
+in the same turn and up to nine dependent requests finish before the check
+phase. node's own test-fs-promises-file-handle-readFile sees exactly that. Its
+"Signal aborted right before buffer read" case races a setImmediate-scheduled
+AbortController against the fstat/read pair inside readFileHandle, and it
+needs the abort to land between them.
+
+Which is why READ and WRITE are inline here too, and why they have to be.
+Leaving them on the pool would put a dependent read in the poll phase of the
+turn that delivered its fstat -- one turn for two requests again, by the other
+route. Both go inline, and the chain becomes: turn 1 delivers the open and the
+callback submits the fstat; turn 1's check phase runs the abort's setImmediate;
+turn 2 delivers the fstat and the callback submits the read; turn 3 delivers
+the read into a checkAborted that rejects.
+
+READ and WRITE cannot be inlined unconditionally, though: a read on a pipe, a
+socket or a tty blocks, and blocking the loop thread is the one thing this
+change must not do. So an fd is eligible only if it is known to be a regular
+file, and the knowing costs no per-op syscall. uv__fs_open_register() fstats
+the fd once at the completion of a UV_FS_OPEN and stores S_ISREG(st.st_mode)
+in one byte of uv__fs_regular_fd[]. The store is unconditional: a successful
+open of a pipe, a socket or a tty -- or an fstat that fails -- writes 0, so
+the byte is authoritative at every open rather than merely set on regular
+files, and a recycled fd number cannot inherit a stale 1 from whatever held it
+last. uv_fs_close() clears the byte before the close, on both arms and on the
+synchronous path too. An fd that never came out of a uv_fs_open() at all --
+stdin, stdout, stderr, a pipe, a socket, anything opened outside libuv -- has
+no byte set and stays on the pool, which is the safe default rather than a
+special case.
+
+Every open uv__fs_work runs registers, whichever arm ran it: the call is at the
+end of uv__fs_work, so the inline, pool and synchronous opens all pay it.
+fs.openSync() followed by asynchronous fs.read() is an ordinary node shape --
+readFileSync's neighbours in lib/fs.js do it, and so does anything that opens a
+file up front and streams it afterwards -- and an fd whose byte is unset would
+sit on the threadpool for no reason at all, since the fd is just as much a
+regular file for having been opened synchronously. The synchronous arm
+therefore pays one extra fstat per fs.openSync(): the same single syscall the
+asynchronous arm pays, on a path that was already making a blocking open on
+this thread. A pool open registers too, so its fd does not inherit the byte a
+previous regular file left under that number. The fstat now sits inside the
+census's sync bracket on the synchronous arm and outside the syscall bracket on
+the other two, which moves its time between census rows and nowhere else.
+
+That table is a file-static in unix/fs.c and deliberately not a member of
+uv__loop_internal_fields_t, because a close cannot always reach a loop: node
+calls uv_fs_close(nullptr, &req, fd, nullptr) in fourteen places, which is
+legal for a synchronous request and which uv__get_internal_fields() cannot
+survive -- a loop-keyed table would be unclearable in exactly the places
+clearing matters, and dereferencing the null loop to clear it segfaults node
+during startup. The fd space is per process in any case, since worker threads
+run their own loops over the same fds, so the table is per process too: a
+fixed 65536 bytes, indexed by fd, with anything above that range left
+untracked and therefore on the pool. The bytes are relaxed atomics because two
+loop threads may touch them at once; nothing orders on them, and a lost race
+can only make an fd look untracked, which costs a threadpool round trip and
+nothing else.
+
+OPEN itself is the same hazard one step earlier: open(2) of a FIFO blocks until
+the other end is opened, and a process that opens both ends of one -- node's
+test-http2-respond-file-with-pipe does, with respondWithFile reading the FIFO
+and fs.writeFile filling it -- would block its only loop thread in the first
+open and never reach the second. So uv__fs_open_may_block() stats the path
+first, and an open goes inline only when the path is a regular file, a
+directory or a path stat cannot resolve (the open then fails at once, or
+O_CREAT makes a regular file), or when O_NONBLOCK says the open cannot wait;
+anything else goes to the pool, where upstream opens it. That is one stat per
+asynchronous open -- an ENOENT one for every file a tar extraction creates --
+which the lstat figures above predate. It is a check and not a guarantee: a
+path replaced by a FIFO between the stat and the open still blocks, which is
+the price of not intercepting open(2) in the kernel.
+
+The rest of the op set is not a judgement call either: it is known_broken()
+from upstream's own test/test-threadpool-cancel.c, the set libuv already
+declares non-cancellable when io_uring is servicing it -- close, fdatasync,
+fstat, fsync, ftruncate, link, lstat, mkdir, open, rename, stat, symlink,
+unlink, and read and write, with open, read and write under the conditions
+above. threadpool_cancel_fs skips exactly these, so a request that becomes
+uncancellable by running inline breaks no upstream test.
+
+Cancellation follows the io_uring precedent rather than inventing a third
+answer. uv__work_cancel's predicate is "still queued AND work != NULL"; an
+inline request is queued with work == NULL, so uv_cancel returns UV_EBUSY, the
+same answer it gives for a request a worker has already picked up.
+
+Two consequences worth stating. errno is now clobbered by the fs syscall on the
+caller's own thread rather than on a worker's -- uv__fs_work sets errno = 0 on
+entry and the result is carried in req->result, so libuv itself does not care,
+but a caller that read errno across an async uv_fs_* call was reading a
+different thread's before and its own now. (The open-time fstat saves and
+restores errno for the same reason.) And with every fs request inline the
+threadpool may never be created at all in a process that issues no other work;
+uv__work_cancel and uv__work_submit both still run uv_once(&once, init_once)
+before touching the global mutex, so nothing observes an uninitialised pool.
+
+The fd table's bit is set by uv_fs_open() and cleared by uv_fs_close(), and
+those are the only two writers -- which is the hazard, stated plainly rather
+than left for a reader to find. An fd that uv_fs_open() opened on a regular
+file and that is then closed by something other than uv_fs_close() -- a bare
+close(2), or libuv's own uv__close(), both of which node does use -- leaves
+its bit set. The kernel is free to hand that same fd number back for the next
+open of anything at all, including a pipe or a socket; if that reopen goes
+through uv_fs_open() the unconditional store corrects the byte, but if it does
+not -- a bare open(2), an accept(4), a pipe(2) -- the table still says
+"regular file" until something calls uv_fs_close() on it. A uv_fs_read()
+on such an fd then takes the inline path and blocks the loop thread inside
+read(2) until the peer writes or closes: not a wrong answer, but the one thing
+this change exists to avoid, and invisible in a census because the time lands
+in the caller's own frame. Nothing in node reaches that shape today -- every
+fd node opens through uv_fs_open() it closes through uv_fs_close() -- so this
+is a constraint on future callers, not a live bug. Widening the table to
+observe every close would mean intercepting close(2) itself, which is a
+kernel-side change, not a libuv one.
+
+VISORJS_UV_FS_INLINE selects the arm, read once on the first async request the
+way uv__use_io_uring reads UV_USE_IO_URING. Default on; "0" is off and is
+semantically upstream, which makes it the A/B arm. Semantically, not
+byte-for-byte: with "0" the added code is still compiled in -- the extra
+branch in POST, uv__loop_internal_fields_t::inline_pending, uv__fs_regular_fd[]
+and its clear in uv_fs_close() are all there -- it is only that uv__fs_inline()
+returns 0 and no request ever takes the inline path, nor pays the pre-open
+stat. uv__fs_open_register() is not gated on it, so an "0" run still pays the
+one fstat per open. Any other value is on.
+
+The split is a #if defined(__wasm__) rather than an unconditional change only
+because deps/uv/uv.gyp builds libuv for both toolsets: node_js2c links a host
+copy built by the host compiler, which has no Sentry underneath it and for which
+the threadpool is exactly right. That branch is upstream's, unmodified --
+inline_pending is not even a member of the host copy's internal fields, and
+uv__fs_regular_fd[] is not compiled into it.
+
+--- a/deps/uv/src/unix/core.c
++++ b/deps/uv/src/unix/core.c
+@@ -440,6 +440,9 @@
+       /* uv__loop_alive(loop) && */
+       (uv__has_active_handles(loop) || uv__has_active_reqs(loop)) &&
+       uv__queue_empty(&loop->pending_queue) &&
++#if defined(__wasm__)
++      uv__get_internal_fields((uv_loop_t*) loop)->inline_pending == 0 &&
++#endif
+       uv__queue_empty(&loop->idle_handles) &&
+       (loop->flags & UV_LOOP_REAP_CHILDREN) == 0 &&
+       loop->closing_handles == NULL)
+@@ -486,6 +489,22 @@
+         uv__queue_empty(&loop->idle_handles);
+ 
+     uv__run_pending(loop);
++
++#if defined(__wasm__)
++    /* Pending-phase delivery for the completions uv__fs_inline_submit() ran
++     * on this thread. uv__work_done() drains all of loop->wq, so this is one
++     * batch per turn rather than one completion. The counter is cleared
++     * first, so a request a callback submits inline during that drain re-arms
++     * it and always lands in the next batch, delivered by the *next* turn's
++     * pending phase -- with uv__run_check() and every setImmediate in it
++     * running in between, exactly as a threadpool worker's completion would
++     * have it. */
++    if (uv__get_internal_fields(loop)->inline_pending != 0) {
++      uv__get_internal_fields(loop)->inline_pending = 0;
++      uv__work_done(&loop->wq_async);
++    }
++#endif
++
+     uv__run_idle(loop);
+     uv__run_prepare(loop);
+ 
+--- a/deps/uv/src/unix/fs.c
++++ b/deps/uv/src/unix/fs.c
+@@ -178,6 +178,10 @@
+     if (cb != NULL) {                                                         \
+       reactor_uv_fs_async_submit();                                           \
+       uv__req_register(loop);                                                 \
++      if (uv__fs_inline() && uv__fs_inlineable(req)) {                        \
++        uv__fs_inline_submit(loop, req);                                      \
++        return 0;                                                             \
++      }                                                                       \
+       uv__work_submit(loop,                                                   \
+                       &req->work_req,                                         \
+                       UV__WORK_FAST_IO,                                       \
+@@ -1716,6 +1720,11 @@
+ }
+ 
+ 
++#if defined(__wasm__)
++static void uv__fs_open_register(uv_fs_t* req);
++#endif
++
++
+ static void uv__fs_work(struct uv__work* w) {
+   int retry_on_eintr;
+   uv_fs_t* req;
+@@ -1787,6 +1796,10 @@
+                  req->fs_type == UV_FS_LSTAT)) {
+     req->ptr = &req->statbuf;
+   }
++
++#if defined(__wasm__)
++  uv__fs_open_register(req);
++#endif
+ }
+ 
+ 
+@@ -1804,9 +1817,179 @@
+   reactor_uv_fs_done_begin();
+   req->cb(req);
+   reactor_uv_fs_done_end();
++}
++
++
++#if defined(__wasm__)
++
++/* Read once, like uv__use_io_uring() does for UV_USE_IO_URING. 0 is the
++ * not-yet-read state, 1 on, -1 off; any value other than "0" leaves it on.
++ */
++static int uv__fs_inline(void) {
++  static _Atomic int mode;
++  const char* val;
++  int use;
++
++  use = atomic_load_explicit(&mode, memory_order_relaxed);
++
++  if (use == 0) {
++    val = getenv("VISORJS_UV_FS_INLINE");
++    use = (val != NULL && strcmp(val, "0") == 0) ? -1 : 1;
++    atomic_store_explicit(&mode, use, memory_order_relaxed);
++  }
++
++  return use > 0;
++}
++
++
++/* One byte per fd: 1 while uv_fs_open() has returned that fd for a regular
++ * file and uv_fs_close() has not been called on it.
++ *
++ * It is a file-static and not a member of uv__loop_internal_fields_t because
++ * a close cannot always reach a loop: node calls uv_fs_close(nullptr, ...)
++ * in fourteen places, which is legal for a synchronous request and which
++ * uv__get_internal_fields() cannot survive. An fd table keyed on the loop
++ * would therefore be unclearable exactly where clearing matters. The fd space
++ * is per process anyway -- worker threads run their own loops over the same
++ * fds -- so the table is too, and the bytes are relaxed atomics because two
++ * loop threads may touch it at once. */
++#define UV__FS_REGULAR_FD_MAX 65536
++static _Atomic unsigned char uv__fs_regular_fd[UV__FS_REGULAR_FD_MAX];
++
++
++static int uv__fs_fd_is_regular(uv_file file) {
++  if (file < 0 || (unsigned int) file >= UV__FS_REGULAR_FD_MAX)
++    return 0;
++
++  return atomic_load_explicit(&uv__fs_regular_fd[file],
++                              memory_order_relaxed) != 0;
++}
++
++
++static void uv__fs_fd_set_regular(uv_file file, int on) {
++  if (file < 0 || (unsigned int) file >= UV__FS_REGULAR_FD_MAX)
++    return;  /* Out of the table's range is "not regular": stay on the pool. */
++
++  atomic_store_explicit(&uv__fs_regular_fd[file],
++                        (unsigned char) (on ? 1 : 0),
++                        memory_order_relaxed);
++}
++
++
++/* open(2) blocks on a FIFO until its peer opens, and may on a device, so an
++ * open runs inline only on a regular file, a directory, or a path stat cannot
++ * resolve (the open then fails at once, or O_CREAT makes a regular file);
++ * anything else stays on the pool. One stat per open. A path replaced by a
++ * FIFO between that stat and the open still blocks. */
++static int uv__fs_open_may_block(const uv_fs_t* req) {
++  struct stat st;
++  int saved_errno;
++  int r;
++
++  if (req->flags & O_NONBLOCK)
++    return 0;
++
++  saved_errno = errno;
++  r = stat(req->path, &st) == 0 &&
++      !S_ISREG(st.st_mode) && !S_ISDIR(st.st_mode);
++  errno = saved_errno;
++  return r;
++}
++
++
++static int uv__fs_inlineable(const uv_fs_t* req) {
++  switch (req->fs_type) {
++    case UV_FS_CLOSE:
++    case UV_FS_FDATASYNC:
++    case UV_FS_FSTAT:
++    case UV_FS_FSYNC:
++    case UV_FS_FTRUNCATE:
++    case UV_FS_LINK:
++    case UV_FS_LSTAT:
++    case UV_FS_MKDIR:
++    case UV_FS_RENAME:
++    case UV_FS_STAT:
++    case UV_FS_SYMLINK:
++    case UV_FS_UNLINK:
++      return 1;
++    case UV_FS_OPEN:
++      return !uv__fs_open_may_block(req);
++    case UV_FS_READ:
++    case UV_FS_WRITE:
++      /* Only for an fd uv_fs_open() reported as a regular file. Anything
++       * else -- a pipe, a socket, a tty, an fd opened outside libuv -- can
++       * block the loop thread indefinitely and stays on the pool. */
++      return uv__fs_fd_is_regular(req->file);
++    default:  /* Squelch -Wswitch warnings. */
++      break;
++  }
++
++  return 0;
++}
++
++
++/* One fstat per open, on whichever thread ran it, and none per read or write:
++ * this is the whole cost of knowing an fd is a regular file. The byte is
++ * written unconditionally, so a successful open of a pipe, a socket or a tty
++ * -- or an fstat that fails -- stores 0 over whatever the previous owner of
++ * that fd number left there. It is therefore authoritative at every open
++ * rather than only set on regular files, which is what makes a recycled fd
++ * safe.
++ *
++ * errno is saved and restored because uv__fs_work() has already carried the
++ * result into req->result and a caller may read errno after the submitting
++ * call returns. */
++static void uv__fs_open_register(uv_fs_t* req) {
++  struct stat st;
++  int saved_errno;
++
++  if (req->fs_type != UV_FS_OPEN || req->result < 0)
++    return;
++
++  saved_errno = errno;
++  uv__fs_fd_set_regular((uv_file) req->result,
++                        fstat((int) req->result, &st) == 0 &&
++                            S_ISREG(st.st_mode));
++  errno = saved_errno;
+ }
+ 
+ 
++static void uv__fs_inline_submit(uv_loop_t* loop, uv_fs_t* req) {
++  struct uv__work* w;
++
++  w = &req->work_req;
++  w->loop = loop;
++  w->work = uv__fs_work;
++  w->done = uv__fs_done;
++  uv__queue_init(&w->wq);
++
++  uv__fs_work(w);
++
++  /* The state a worker thread leaves behind, minus the uv_async_send():
++   * work == NULL is what uv__work_cancel() reads as "already executing",
++   * and loop->wq is where uv__work_done() looks. */
++  uv_mutex_lock(&loop->wq_mutex);
++  w->work = NULL;
++  uv__queue_insert_tail(&loop->wq, &w->wq);
++  uv_mutex_unlock(&loop->wq_mutex);
++
++  /* Not uv_async_send(): there is no sleeping thread to wake, and the
++   * eventfd write plus the epoll wake it costs are pure overhead on this
++   * thread. The counter makes uv__backend_timeout() return 0 instead, and
++   * uv_run() drains loop->wq in the next pending phase. */
++  uv__get_internal_fields(loop)->inline_pending++;
++}
++
++#else
++
++#define uv__fs_inline() 0
++#define uv__fs_inlineable(req) 0
++#define uv__fs_inline_submit(loop, req) ((void) 0)
++#define uv__fs_fd_set_regular(file, on) ((void) 0)
++
++#endif
++
++
+ void uv__fs_post(uv_loop_t* loop, uv_fs_t* req) {
+   uv__req_register(loop);
+   uv__work_submit(loop,
+@@ -1858,6 +2041,9 @@
+ int uv_fs_close(uv_loop_t* loop, uv_fs_t* req, uv_file file, uv_fs_cb cb) {
+   INIT(CLOSE);
+   req->file = file;
++  /* Before the close, on both arms and whether or not there is a loop: the
++   * fd number is about to be free for something that is not a regular file. */
++  uv__fs_fd_set_regular(file, 0);
+   if (cb != NULL)
+     if (uv__iou_fs_close(loop, req))
+       return 0;
+--- a/deps/uv/src/uv-common.h
++++ b/deps/uv/src/uv-common.h
+@@ -431,6 +431,13 @@
+   unsigned int flags;
+   uv__loop_metrics_t loop_metrics;
+   int current_timeout;
++#if defined(__wasm__)
++  /* Completions published on loop->wq by uv__fs_inline_submit() and not yet
++   * drained. Read by uv__backend_timeout(), so uv__io_poll() does not sleep
++   * on one, and cleared by uv_run() in the pending phase, one turn's worth
++   * at a time. */
++  unsigned int inline_pending;
++#endif
+ #ifdef __linux__
+   struct uv__iou ctl;
+   struct uv__iou iou;

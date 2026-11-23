@@ -1,0 +1,30 @@
+# Maintainer: visorjs <info@visorjs.com>
+pkgname=visorjs-init
+pkgver=1
+pkgrel=4
+pkgdesc="visorjs pid 1: reaps every child, never exits"
+url="http://repo.visorjs.internal"
+arch="wasm64"
+license="LicenseRef-visorjs-proprietary"
+depends="musl"
+options="!check !strip !archcheck"
+builddir="$srcdir"
+
+# No aports counterpart to mirror: Alpine's pid 1 is busybox init or OpenRC,
+# which run a service table. A visorjs container has none; its pid 1 only has
+# to exist and reap what the kernel reparents to it, so the embedder's own
+# processes never hold pid 1. /bin/init is where every boot site runs it.
+source="init.c"
+
+build() {
+	$CC -std=c99 -Oz -Wall -c "$srcdir/init.c" -o init.o
+	$LD -Wl,--gc-sections init.o -o init
+}
+
+package() {
+	install -D -m755 init "$pkgdir/bin/init"
+}
+
+sha512sums="
+e68dc3eba50af5be7cb95f7e6c8b69af2b52f6673356518fd33c48aa584fe3d765b0c2171f56a62f8d002571549dfe6dd17cb9ec320db0554b02bea92408041c  init.c
+"

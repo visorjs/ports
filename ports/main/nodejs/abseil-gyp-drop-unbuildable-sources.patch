@@ -1,0 +1,42 @@
+absl is the one v8_gypfiles target that survives --without-bundled-v8, since
+node.cc uses absl::Mutex, and it wants neither of the two architecture answers
+the rest of this build needs. -U__i386__ (the lever v8config.h's host block
+forces on everything that includes it) keeps absl off the x86 rdtsc path in
+unscaledcycleclock.cc, which does not compile here. -U__linux__ is what node's
+bundled libuv needs gyp's own source selection to agree with, and it also
+keeps low_level_alloc.cc off the `#ifdef __linux__` include of direct_mmap.h.
+Both land in cflags_cc: gyp's ninja rule spells the compile line
+$cflags $cflags_cc, and the environment's CXXFLAGS are prepended to the second,
+so only there does a target-specific flag come last for a C++ source. absl's C
+sources take the same two undefines through cflags_c, which is the only list a
+C source reads at all.
+
+What -U__linux__ would otherwise take with it -- ABSL_HAVE_MMAP, and the four
+synchronization sources whose bodies hang off it -- is restored by
+abseil-config-wasm-has-mmap.patch; see that file.
+
+Two source families are dropped outright: str_format and everything that
+pulls it -- the cord families, absl/crc, container/internal/raw_hash_set.cc --
+need std::wstring, which this libc++ does not provide: `no type named
+'wstring' in namespace 'std'`.
+
+--- a/tools/v8_gypfiles/abseil.gyp
++++ b/tools/v8_gypfiles/abseil.gyp
+@@ -18,6 +18,17 @@
+       },
+       'include_dirs': [
+         '<(ABSEIL_ROOT)',
++      ],
++      'cflags_c': [ '-U__i386__', '-U__linux__' ],
++      'cflags_cc': [ '-U__i386__', '-U__linux__' ],
++      'sources!': [
++        '<(ABSEIL_ROOT)/absl/container/internal/raw_hash_set.cc',
++      ],
++      'sources/': [
++        ['exclude', '/absl/crc/'],
++        ['exclude', '/absl/strings/cord'],
++        ['exclude', '/absl/strings/internal/cord'],
++        ['exclude', '/absl/strings/internal/str_format/'],
+       ],
+       'sources': [
+         '<(ABSEIL_ROOT)/absl/algorithm/algorithm.h',

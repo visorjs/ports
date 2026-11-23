@@ -1,0 +1,60 @@
+# Maintainer: visorjs <info@visorjs.com>
+pkgname=zstd
+pkgver=1.5.7
+_sover=1
+pkgrel=8
+pkgdesc="Zstandard - Fast real-time compression algorithm"
+url="https://facebook.github.io/zstd/"
+arch="wasm64"
+license="BSD-3-Clause OR GPL-2.0-or-later"
+depends="zstd-libs musl>=1.2.6-r28"
+depends_dev="$pkgname=$pkgver-r$pkgrel"
+subpackages="$pkgname-libs $pkgname-static $pkgname-dev $pkgname-doc $pkgname-frugal"
+options="!check !strip !archcheck"
+source="zstd-$pkgver.tar.gz::https://github.com/facebook/zstd/archive/v$pkgver.tar.gz"
+builddir="$srcdir/zstd-$pkgver"
+
+# abuild-meson ships with Alpine's meson package, which cannot be installed
+# here, so its standard arguments are spelled out. Two of Alpine's switches
+# are dropped: -Db_pgo's second stage runs the binary it just built, and
+# nothing here executes wasm64; -Dbin_contrib builds pzstd, whose
+# contrib/pzstd/utils/Range.h throws std::out_of_range, and this
+# platform's libc++abi is built with _LIBCXXABI_NO_EXCEPTIONS (no
+# unwinding support at all, not just an unprovided runtime).
+build() {
+	meson setup \
+		--cross-file /usr/local/share/reactor/meson/wasm64-reactor.ini \
+		--prefix=/usr --libdir=/usr/lib --buildtype=plain \
+		--wrap-mode=nodownload --default-library=both \
+		-Db_ndebug=true \
+		-Dbin_programs=true \
+		-Dbin_contrib=false \
+		-Dbin_tests=false \
+		-Dbacktrace=disabled \
+		-Dmulti_thread=enabled \
+		-Dlz4=disabled \
+		-Dlzma=disabled \
+		-Dzlib=disabled \
+		build/meson output
+	meson compile -C output
+}
+
+package() {
+	DESTDIR="$pkgdir" meson install --no-rebuild -C output
+}
+
+libs() {
+	pkgdesc="$pkgdesc (libraries)"
+	depends="musl>=1.2.6-r28"
+	amove usr/lib/libzstd.so.*
+}
+
+frugal() {
+	pkgdesc="$pkgdesc (frugal cli)"
+	depends="zstd-libs musl>=1.2.6-r28"
+	amove usr/bin/zstd-frugal
+}
+
+sha512sums="
+26e441267305f6e58080460f96ab98645219a90d290a533410b1b0b1d2f870721c95f8384e342ee647c5e968385a5b7e30c2d04340c37f59b3e6d86762c3260c  zstd-1.5.7.tar.gz
+"

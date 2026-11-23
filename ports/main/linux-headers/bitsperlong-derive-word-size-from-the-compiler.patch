@@ -1,0 +1,27 @@
+Derive __BITS_PER_LONG from the compiler, not from __x86_64__
+
+x86's UAPI header decides the word size from __x86_64__ alone and says 32
+otherwise. The wasm64 target this tree builds for is LP64 but defines
+neither __i386__ nor __x86_64__, so it would take the 32-bit branch and
+every UAPI type built on __kernel_long_t would come out the wrong width.
+
+Dropping the branch hands the decision to asm-generic/bitsperlong.h,
+which computes it from __CHAR_BIT__ * __SIZEOF_LONG__ — upstream's own
+preferred spelling for exactly this reason, and identical to the branch
+being removed on any real x86_64 toolchain.
+
+--- a/arch/x86/include/uapi/asm/bitsperlong.h
++++ b/arch/x86/include/uapi/asm/bitsperlong.h
+@@ -2,12 +2,6 @@
+ #ifndef __ASM_X86_BITSPERLONG_H
+ #define __ASM_X86_BITSPERLONG_H
+
+-#if defined(__x86_64__) && !defined(__ILP32__)
+-# define __BITS_PER_LONG 64
+-#else
+-# define __BITS_PER_LONG 32
+-#endif
+-
+ #include <asm-generic/bitsperlong.h>
+
+ #endif /* __ASM_X86_BITSPERLONG_H */

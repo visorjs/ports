@@ -1,0 +1,49 @@
+# Maintainer: visorjs <info@visorjs.com>
+pkgname=visor-pty
+pkgver=1
+pkgrel=8
+pkgdesc="Pseudoterminal helper a pure-JS node-pty drives"
+url="http://repo.visorjs.internal"
+arch="wasm64"
+license="LicenseRef-visorjs-proprietary"
+depends="musl>=1.2.6-r28"
+options="!check !strip !archcheck"
+builddir="$srcdir"
+
+# No aports counterpart to mirror: the helper is first-party, and exists
+# because there is no wasm64 native node addon and no compiler in the guest,
+# so node-pty's C++ addon is replaced by a JS module that drives this binary
+# over pipes. Its interface is documented in the source header: argv is
+# `visor-pty <cols> <rows> <argv...>`, and fd 3 carries fixed 8-byte
+# little-endian control records.
+#
+# visor-pty.c is byte-identical to
+# packages/posix-suite/local/_harness/visor-pty.c, which is the same helper
+# compiled into the posix conformance gate's own pty coverage. abuild resolves
+# a local source= only next to the APKBUILD, so the file is carried here as
+# well; build() cmp's the two, so drift fails the build.
+source="visor-pty.c"
+
+# The copy the posix gate compiles. Reached through the repo bind mount, the
+# way v8-shim and nodejs reach into /work/packages for their own inputs.
+_canonical="/work/packages/posix-suite/local/_harness/visor-pty.c"
+
+build() {
+	test -f "$_canonical" || die "no $_canonical — the posix gate's copy moved"
+	cmp "$srcdir/visor-pty.c" "$_canonical" \
+		|| die "visor-pty.c has drifted from $_canonical — sync the two"
+
+	# forkpty/openpty are declared under _GNU_SOURCE in this libc's <pty.h>.
+	# No setjmp/longjmp in this source, so none of the sjlj lowering the
+	# shells need applies here.
+	$CC -std=c99 -O2 -D_GNU_SOURCE=1 -c "$srcdir/visor-pty.c" -o visor-pty.o
+	$LD --entry-shape=dynamic visor-pty.o -o visor-pty
+}
+
+package() {
+	install -D -m755 visor-pty "$pkgdir/usr/bin/visor-pty"
+}
+
+sha512sums="
+d365f70e52a5accd24ed467f04dc7ae48404ff7462ed08058cc3318888fe47d7d4e622a9995fe330fd2f314c3a1947a397c7736a753bd062ce27078f40472c33  visor-pty.c
+"

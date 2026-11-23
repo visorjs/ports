@@ -1,0 +1,40 @@
+{
+  "project": "lightningcss",
+  "package": "lightningcss",
+  "description": "vite's CSS transformer. The npm tarball ships no Rust source, so the git route takes the tagged tree. Provenance is not cross-checked: the release publishes no attestation, and upstream moved the v<version> tag one commit past the gitHead the packument names (the tag adds only rust-toolchain.toml, which this build does not read). The one cdylib, lightningcss_node, stands in for lightningcss-linux-x64-{gnu,musl}. Versions: 0.0.0 is a name placeholder whose tarball holds only package.json (no binding, no optionalDependencies), and 1.21.4, 1.21.7, 1.28.1, 1.29.1 and 1.31.1 have no v<version> tag upstream (git ls-remote), so the git route cannot clone them; those are denied. Loader: up to 1.31.1 node/index.js assigns module.exports = require(the platform binding), handing the binding over whole; from 1.32.0 it wraps named exports off `native`. Profile: upstream's release profile is already panic=abort; its wasm build (wasm:build-release) runs wasm-opt without -g, which drops the name section, so the recipe strips symbols.",
+  "source": {
+    "route": "git",
+    "url": "https://github.com/parcel-bundler/lightningcss.git",
+    "tag": "v{version}",
+    "provenance": "none"
+  },
+  "build": {
+    "kind": "cargo",
+    "manifestPath": "node/Cargo.toml",
+    "args": ["--lib"],
+    "profile": {
+      "strip": "symbols"
+    },
+    "output": "target/wasm64-visorjs-linux-musl/release/liblightningcss_node.so"
+  },
+  "upstream": {
+    "platformPackages": ["lightningcss-linux-x64-{libc}"]
+  },
+  "parity": {
+    "loader": [
+      {
+        "versions": "..1.32.0",
+        "file": "node/index.js",
+        "reexports": true
+      },
+      {
+        "versions": "1.32.0..",
+        "file": "node/index.js",
+        "binding": "native"
+      }
+    ]
+  },
+  "versions": {
+    "deny": ["0.0.0", "1.21.4", "1.21.7", "1.28.1", "1.29.1", "1.31.1"]
+  }
+}

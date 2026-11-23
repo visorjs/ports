@@ -1,0 +1,102 @@
+# Maintainer: visorjs <info@visorjs.com>
+pkgname=sqlite
+pkgver=3.53.4
+_sover=0
+pkgrel=8
+pkgdesc="C library that implements an SQL database engine"
+url="https://www.sqlite.org/"
+arch="wasm64"
+license="blessing"
+depends="sqlite-libs musl>=1.2.6-r28"
+depends_dev="$pkgname=$pkgver-r$pkgrel"
+subpackages="$pkgname-static $pkgname-doc $pkgname-dev $pkgname-libs"
+options="!check !strip !archcheck"
+source="https://www.sqlite.org/2026/sqlite-autoconf-3530400.tar.gz"
+builddir="$srcdir/sqlite-autoconf-3530400"
+
+# Feature defines: Alpine main/sqlite's $_amalgamation, verbatim.
+_amalgamation="-DSQLITE_ENABLE_FTS3_PARENTHESIS \
+	-DSQLITE_ENABLE_COLUMN_METADATA \
+	-DSQLITE_SECURE_DELETE \
+	-DSQLITE_ENABLE_UNLOCK_NOTIFY \
+	-DSQLITE_ENABLE_RTREE \
+	-DSQLITE_ENABLE_GEOPOLY \
+	-DSQLITE_USE_URI \
+	-DSQLITE_ENABLE_DBSTAT_VTAB \
+	-DSQLITE_SOUNDEX \
+	-DSQLITE_MAX_VARIABLE_NUMBER=250000"
+
+# The rest of Alpine's feature set arrives through its ./configure
+# switches, which this recipe cannot run (see build()), so the defines
+# those switches produce are spelled out instead:
+#   --enable-threadsafe            SQLITE_THREADSAFE=1
+#   --enable-fts3 --enable-fts4    SQLITE_ENABLE_FTS3 / _FTS4
+#   --enable-fts5                  SQLITE_ENABLE_FTS5
+#   --enable-session               SQLITE_ENABLE_SESSION plus the
+#                                  preupdate hook it requires
+#   --enable-static                the -static subpackage below
+# JSON1 needs no define: upstream builds it in unconditionally since
+# 3.38, which is why Alpine does not set one either.
+_configure_defines="-DSQLITE_THREADSAFE=1 \
+	-DSQLITE_ENABLE_FTS3 \
+	-DSQLITE_ENABLE_FTS4 \
+	-DSQLITE_ENABLE_FTS5 \
+	-DSQLITE_ENABLE_SESSION \
+	-DSQLITE_ENABLE_PREUPDATE_HOOK"
+
+# One of Alpine's switches has no counterpart here: --enable-readline
+# needs a readline library, which this tree has no package for; the
+# shell keeps HAVE_READLINE=0. --soname=legacy is reproduced directly
+# via reactor-link's --soname flag instead.
+
+# Built straight from the amalgamation rather than through upstream's
+# ./configure: it is an autosetup/tcl script that composes and runs its
+# own compile and link command lines, and there is no way to make those
+# come out as reactor-cc / reactor-link invocations with this
+# platform's entry shapes. Every other divergence from Alpine's recipe
+# is annotated above; this is the one the platform forces.
+build() {
+	# Alpine exports CFLAGS before ./configure, so the shell is compiled
+	# with the same feature defines as the library — .session, .fts and
+	# the rest of the CLI's dot-commands compile out otherwise.
+	local cflags="-O2 $_amalgamation $_configure_defines"
+	$CC $cflags -c sqlite3.c -o sqlite3.o
+	$LD --entry-shape=shared --soname libsqlite3.so.$_sover sqlite3.o \
+		"$REACTOR_SYSROOT/lib/libc.so" -o libsqlite3.so
+	llvm-ar rcs libsqlite3.a sqlite3.o
+	$CC $cflags -c shell.c -o shell.o -I. -DHAVE_READLINE=0
+	$LD --entry-shape=dynamic shell.o libsqlite3.so -o sqlite3
+
+	# upstream's Makefile.in generates sqlite3.pc from sqlite3.pc.in;
+	# the LDFLAGS_* substitutions are the libraries ./configure detected,
+	# all of which are inside this platform's libc.
+	sed -e 's|@prefix@|/usr|' \
+		-e 's|@exec_prefix@|${prefix}|' \
+		-e 's|@libdir@|/usr/lib|' \
+		-e 's|@includedir@|/usr/include|' \
+		-e "s|@PACKAGE_VERSION@|$pkgver|" \
+		-e 's|@LDFLAGS_[A-Z]*@||g' \
+		sqlite3.pc.in > sqlite3.pc
+}
+
+package() {
+	install -D -m755 sqlite3 "$pkgdir/usr/bin/sqlite3"
+	install -D -m755 libsqlite3.so "$pkgdir/usr/lib/libsqlite3.so.$pkgver"
+	ln -s libsqlite3.so.$pkgver "$pkgdir/usr/lib/libsqlite3.so.$_sover"
+	ln -s libsqlite3.so.$pkgver "$pkgdir/usr/lib/libsqlite3.so"
+	install -D -m644 libsqlite3.a "$pkgdir/usr/lib/libsqlite3.a"
+	install -D -m644 sqlite3.h "$pkgdir/usr/include/sqlite3.h"
+	install -D -m644 sqlite3ext.h "$pkgdir/usr/include/sqlite3ext.h"
+	install -D -m644 sqlite3.pc "$pkgdir/usr/lib/pkgconfig/sqlite3.pc"
+	# The amalgamation tarball carries the man page Alpine's -doc ships;
+	# the full-source zip Alpine also fetches is only for its LICENSE.md.
+	install -D -m644 sqlite3.1 "$pkgdir/usr/share/man/man1/sqlite3.1"
+}
+
+libs() {
+	pkgdesc="SQLite shared library"
+	depends="musl>=1.2.6-r28"
+	amove usr/lib/libsqlite3.so.*
+}
+
+sha512sums="c24374e9393a943157f533f96e89e6c5743e5f5aad169d8393cff3088ca5ccbe5cc0561681ace49c349d0fe402298ee2624d319f422967247ce0792e3b3aa01e  sqlite-autoconf-3530400.tar.gz"

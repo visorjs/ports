@@ -1,0 +1,59 @@
+--dest-cpu=x64 is the only value whose gyp arch flag (-m64) the wasm64
+target accepts -- ia32 emits -m32, which silently retargets clang to wasm32,
+and arm64 emits -mbranch-protection=, a hard error. x64 in turn selects the
+large-pages text-start marker, src/large_pages/node_text_start.S, which is
+x86 assembly the assembler rejects on `.align 0x2000`: invalid alignment
+value.
+
+x64 also defines NODE_ENABLE_LARGE_CODE_PAGES, whose node_large_page.cc
+references __start_lpstub, the start of a code section wasm-ld never
+synthesizes: an unresolved GOT.mem import in node. Without the define,
+`node --use-largepages` reports large pages unsupported, as node on arm64
+Linux does.
+
+--- a/node.gyp
++++ b/node.gyp
+@@ -550,16 +550,7 @@
+   'targets': [
+     {
+       'target_name': 'node_text_start',
+-      'type': 'none',
+-      'conditions': [
+-        [ 'OS in "linux freebsd solaris openharmony" and '
+-          'target_arch=="x64"', {
+-          'type': 'static_library',
+-          'sources': [
+-            'src/large_pages/node_text_start.S'
+-          ]
+-        }],
+-      ]
++      'type': 'none'
+     },
+     {
+       'target_name': '<(node_core_target_name)',
+@@ -774,13 +765,6 @@
+             'src/node_snapshot_stub.cc'
+           ],
+         }],
+-        [ 'OS in "linux freebsd openharmony" and '
+-          'target_arch=="x64"', {
+-          'dependencies': [ 'node_text_start' ],
+-          'ldflags+': [
+-            '<(obj_dir)/<(node_text_start_object_path)'
+-          ]
+-        }],
+ 
+         ['node_fipsinstall=="true"', {
+           'variables': {
+@@ -996,11 +980,6 @@
+             '<@(node_quic_sources)',
+           ],
+         }],
+-        [ 'OS in "linux freebsd mac solaris openharmony" and '
+-          'target_arch=="x64" and '
+-          'node_target_type=="executable"', {
+-          'defines': [ 'NODE_ENABLE_LARGE_CODE_PAGES=1' ],
+-        }],
+         [ 'use_openssl_def==1', {
+           # TODO(bnoordhuis) Make all platforms export the same list of symbols.
+           # Teach mkssldef.py to generate linker maps that UNIX linkers understand.

@@ -1,0 +1,130 @@
+# Maintainer: visorjs <info@visorjs.com>
+pkgname=gdbm
+pkgver=1.26
+pkgrel=8
+pkgdesc="GNU dbm is a set of database routines that use extensible hashing"
+url="https://www.gnu.org/software/gdbm/"
+arch="wasm64"
+license="GPL-3.0-or-later"
+# wasm64: aports leaves the runtime edges to tracedeps; the musl floor
+# (a version tracedeps cannot add) and the -dev edges are named here.
+# libgdbm_compat links against libgdbm, and -dev owns both .so symlinks.
+depends="musl>=1.2.6-r28"
+depends_dev="$pkgname=$pkgver-r$pkgrel $pkgname-tools=$pkgver-r$pkgrel"
+subpackages="$pkgname-dev $pkgname-doc $pkgname-tools"
+options="!check !strip !archcheck"
+source="https://ftp.gnu.org/gnu/gdbm/gdbm-$pkgver.tar.gz"
+
+# libtool -version-info, read from the tarball rather than guessed:
+# src/Makefile.am has 6:0:0 and compat/Makefile.am 4:0:0, giving sonames
+# libgdbm.so.6 / libgdbm_compat.so.4 and real files libgdbm.so.6.0.0 /
+# libgdbm_compat.so.4.0.0. Recompute both on a version bump.
+_sover=6
+_solibver=6.0.0
+_compat_sover=4
+_compat_solibver=4.0.0
+
+# wasm64: no _stage_deps helper. gdbm's only optional dependencies are
+# readline and curses, and aports does not enable either (no readline-dev
+# in its makedepends), so nothing but libc is needed.
+build() {
+	# we disable large-file due to it makes the db file non-compat
+	# with gdbm-1.8.3
+	./configure \
+		--build=$CBUILD \
+		--host=$CARCH-alpine-linux-musl \
+		--prefix=/usr \
+		--enable-libgdbm-compat \
+		--disable-largefile \
+		--disable-dependency-tracking \
+		--enable-fast-install \
+		--disable-shared \
+		--enable-static \
+		--disable-nls \
+		ac_cv_func_ftruncate=yes \
+		ac_cv_func_flock=yes \
+		ac_cv_func_lockf=yes \
+		ac_cv_func_fsync=yes \
+		ac_cv_func_setlocale=yes \
+		ac_cv_func_getopt_long=yes \
+		ac_cv_func_getline=yes \
+		ac_cv_func_timer_settime=yes \
+		ac_cv_lib_rt_timer_settime=no \
+		ac_cv_func_msync=yes \
+		ac_cv_func_mmap_fixed_mapped=yes
+
+	# aports passes --host=$CHOST; ports/abuild.conf leaves CHOST unset, so
+	# the triplet is spelled from $CARCH, as every autotools recipe here does.
+
+	# wasm64 divergences in the switch list above, in order:
+	#   --disable-shared --enable-static  libtool cannot link a wasm shared
+	#     object (the finding libunistring and xz already record here), so
+	#     it is never asked to; the two .so files are linked out of the
+	#     archives it did produce, below.
+	#   --disable-nls  no libintl runtime on this platform.
+	# The ac_cv_* values answer autoconf probes whose `char f (void);`
+	# declaration wasm-ld rejects on signature mismatch, so that every one
+	# would otherwise answer "no". Each was resolved against the wasm64
+	# sysroot's actual exports (llvm-nm --defined-only on libc.so): all of
+	# ftruncate, flock, lockf, fsync, setlocale, getopt_long, getline,
+	# timer_settime, msync and mmap are present.
+	#   ac_cv_lib_rt_timer_settime=no is the true answer and not a
+	#     workaround: musl has no separate librt, timer_settime lives in
+	#     libc, and configure only adds -lrt when the libc probe failed.
+	#   ac_cv_func_mmap_fixed_mapped is AC_FUNC_MMAP's run-test. mmap with
+	#     MAP_FIXED is what the reactor MMU implements, so "yes" — this
+	#     turns on gdbm's mapped I/O, which is the configuration aports
+	#     ships (mapped_io defaults to yes).
+
+	sed -i \
+		-e 's|^hardcode_libdir_flag_spec=.*|hardcode_libdir_flag_spec=""|g' \
+		-e 's|^runpath_var=LD_RUN_PATH|runpath_var=DIE_RPATH_DIE|g' \
+		libtool
+	make
+
+	# The two shared libraries aports gets from libtool. libgdbm_compat
+	# needs libgdbm on its link line rather than --whole-archive of both:
+	# it is a thin ndbm/dbm veneer over the gdbm entry points.
+	$LD --entry-shape=shared --soname libgdbm.so.$_sover \
+		-Wl,--whole-archive src/.libs/libgdbm.a -Wl,--no-whole-archive \
+		"$REACTOR_SYSROOT/lib/libc.so" \
+		-o src/.libs/libgdbm.so.$_solibver
+	$LD --entry-shape=shared --soname libgdbm_compat.so.$_compat_sover \
+		-Wl,--whole-archive compat/.libs/libgdbm_compat.a -Wl,--no-whole-archive \
+		src/.libs/libgdbm.so.$_solibver \
+		"$REACTOR_SYSROOT/lib/libc.so" \
+		-o compat/.libs/libgdbm_compat.so.$_compat_solibver
+}
+
+# wasm64: aports' check() is dropped — options="!check" everywhere in this
+# tree, because the build container cannot execute a wasm64 binary.
+
+package() {
+	make DESTDIR="$pkgdir" install
+
+	# --disable-shared means `make install` laid down no shared library;
+	# put the hand-linked ones and the symlinks libtool would have made in
+	# place by hand, as xz and zlib do here.
+	install -D -m755 src/.libs/libgdbm.so.$_solibver \
+		"$pkgdir"/usr/lib/libgdbm.so.$_solibver
+	ln -s libgdbm.so.$_solibver "$pkgdir"/usr/lib/libgdbm.so.$_sover
+	ln -s libgdbm.so.$_solibver "$pkgdir"/usr/lib/libgdbm.so
+
+	install -D -m755 compat/.libs/libgdbm_compat.so.$_compat_solibver \
+		"$pkgdir"/usr/lib/libgdbm_compat.so.$_compat_solibver
+	ln -s libgdbm_compat.so.$_compat_solibver \
+		"$pkgdir"/usr/lib/libgdbm_compat.so.$_compat_sover
+	ln -s libgdbm_compat.so.$_compat_solibver \
+		"$pkgdir"/usr/lib/libgdbm_compat.so
+}
+
+tools() {
+	pkgdesc="$pkgdesc (CLI tools)"
+	depends="$pkgname=$pkgver-r$pkgrel musl>=1.2.6-r28"
+
+	amove usr/bin/*
+}
+
+sha512sums="
+44aafe254f0950a8f5215d8f1337674f07b19f2a375f6eb19a7e39690028c80c3774b705c2b76b470ae74042b21f2ca77d02f6f57aa2ee50296db801220a3352  gdbm-1.26.tar.gz
+"

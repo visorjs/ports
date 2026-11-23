@@ -1,0 +1,30 @@
+# Maintainer: visorjs <info@visorjs.com>
+pkgname=visorjs-keys
+pkgver=1
+pkgrel=7
+pkgdesc="visorjs package signing public keys"
+url="http://repo.visorjs.internal"
+arch="wasm64"
+license="LicenseRef-visorjs-proprietary"
+options="!check !strip !archcheck"
+builddir="$srcdir"
+
+build() { :; }
+
+# A release build (VISORJS_RELEASE=1) installs every key of the committed
+# release keys directory, so a rotation ships the next key beside the
+# current one; VISORJS_RELEASE_KEYS_DIR names another directory for tests.
+# A dev build installs the clone's ports/keys.
+package() {
+	keys=/work/ports/keys
+	if [ "${VISORJS_RELEASE:-}" = 1 ]; then
+		keys=${VISORJS_RELEASE_KEYS_DIR:-/work/ports/visorjs-release-keys}
+		ls "$keys"/*.rsa.pub >/dev/null 2>&1 ||
+			die "no release public key in $keys"
+	fi
+	install -d -m755 "$pkgdir/etc/apk/keys"
+	for pub in "$keys"/*.rsa.pub; do
+		[ -f "$pub" ] || continue
+		install -D -m644 "$pub" "$pkgdir/etc/apk/keys/$(basename "$pub")"
+	done
+}

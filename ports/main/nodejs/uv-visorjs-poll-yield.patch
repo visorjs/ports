@@ -1,0 +1,65 @@
+Yield a host turn where the loop would block in epoll_pwait.
+
+On the host JS-engine arm the guest's JS runs on the engine that hosts the
+kernel, and that engine delivers finalizers, clears kept objects and runs its
+idle work only when the worker task the guest occupies ends. uv__io_poll is
+where the loop goes idle, so it is where that task should end: one call to
+visorjs_yield_turn (the shim's entry, declared in <visorjs-yield.h>) unwinds
+the guest stack to the worker, the worker takes one host task, and the
+fork-rewind replay brings the loop back to this exact call. Idle guest time
+becomes host time; a busy loop pays nothing, because a poll with timeout 0 is
+skipped.
+
+The turn REPLACES the wait rather than preceding it. The call carries the
+epoll fd and the computed timeout: the kernel arms an async readiness wait on
+that fd, and the worker parks on it -- for at most the timeout -- with no
+guest stack under it, so the idle time is the host engine's. When the call
+returns 1 the wait has already happened, so the epoll_pwait below runs with a
+timeout of 0 and collects whatever became ready. A zero timeout also takes the
+loop's own `update_timeout` path, which is exactly the upstream path for a
+poll that has spent its budget: events break out, no events returns, and
+uv_run re-enters with a freshly computed timeout.
+
+The backend refuses the turn -- returning 0 and costing nothing -- on the
+mozjs arm, before V8::Initialize has negotiated the host arm (node's
+delayed-task thread polls before it), when guest JS is on the stack, and when
+the kernel will not arm the readiness wait; the loop then blocks in
+epoll_pwait exactly as it did before.
+
+--- a/deps/uv/src/unix/linux.c
++++ b/deps/uv/src/unix/linux.c
+@@ -53,6 +53,10 @@
+ #include <sys/sysmacros.h>
+ #include <sys/types.h>
+ #include <sys/utsname.h>
++
++#if defined(__wasm__)
++# include <visorjs-yield.h>
++#endif
+ #include <time.h>
+ #include <unistd.h>
+ 
+@@ -1448,6 +1452,23 @@
+         uv__epoll_ctl_flush(epollfd, ctl, &prep);
+ 
+     uv__io_poll_prepare(loop, NULL, timeout);
++#if defined(__wasm__)
++    /* The host turn, in place of the block below. On the host JS-engine arm
++     * the guest's JS runs on the engine hosting the kernel, and that engine
++     * delivers finalizers and runs its idle work only when the worker task
++     * the guest occupies ends. This is where the loop goes idle, so this is
++     * where that task ends: the kernel arms an async readiness wait on
++     * epollfd, the worker parks on it for at most `timeout`, and the replay
++     * brings the loop back to this call. The wait has then already happened,
++     * so the epoll_pwait below collects with a timeout of 0.
++     *
++     * Refused (0) on the mozjs arm, before V8::Initialize, with guest JS on
++     * the stack, or when the kernel will not arm the wait: the loop blocks
++     * below as it always did. A timeout of 0 never waits, so it is skipped. */
++    if (timeout != 0 &&
++        visorjs_yield_turn(VISORJS_YIELD_POLL, timeout, epollfd) == 1)
++      timeout = 0;
++#endif
+     nfds = epoll_pwait(epollfd, events, ARRAY_SIZE(events), timeout, sigmask);
+     uv__io_poll_check(loop, NULL);
+ 

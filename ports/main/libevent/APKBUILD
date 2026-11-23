@@ -1,0 +1,67 @@
+# Maintainer: visorjs <info@visorjs.com>
+pkgname=libevent
+pkgver=2.1.13
+_pkgver=$pkgver-stable
+pkgrel=8
+pkgdesc="An event notification library"
+url="https://libevent.org/"
+arch="wasm64"
+options="!check !strip !archcheck"
+license="BSD-3-Clause"
+depends="musl>=1.2.6-r28 libcrypto3 libssl3"
+depends_dev="openssl-dev $pkgname=$pkgver-r$pkgrel"
+subpackages="$pkgname-static $pkgname-dev"
+source="https://github.com/libevent/libevent/releases/download/release-$_pkgver/libevent-$_pkgver.tar.gz"
+builddir="$srcdir/$pkgname-$_pkgver"
+
+_stage_deps() {
+	local deps="$srcdir/deps-staged"
+	apk add --root "$deps" --initdb --no-scripts --no-chown \
+		--arch "$CARCH" --keys-dir "${VISORJS_APK_KEYS:-/work/ports/keys}" \
+		--repository "$REPODEST/main" \
+		musl openssl-dev libcrypto3 libssl3 pkgconf linux-headers \
+		|| die "staging the dependency root failed"
+
+	export PKG_CONFIG_PATH="$deps/usr/lib/pkgconfig:$deps/usr/share/pkgconfig"
+	export PKG_CONFIG_LIBDIR="$deps/usr/lib/pkgconfig:$deps/usr/share/pkgconfig"
+	export CFLAGS="$CFLAGS -I$deps/usr/include"
+	export CPPFLAGS="$CPPFLAGS -I$deps/usr/include"
+	export LDFLAGS="$LDFLAGS -L$deps/usr/lib"
+	_deps="$deps"
+}
+
+build() {
+	_stage_deps
+
+	cmake -B build -G Ninja \
+		-DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+		-DCMAKE_TOOLCHAIN_FILE=/usr/local/share/reactor/cmake/wasm64-reactor.cmake \
+		-DCMAKE_BUILD_TYPE=RelWithDebInfo \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_PREFIX_PATH="$_deps/usr" \
+		-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+		-DEVENT__LIBRARY_TYPE=BOTH \
+		-DEVENT__DISABLE_TESTS=ON \
+		-DEVENT__DISABLE_SAMPLES=ON \
+		-DEVENT__DISABLE_REGRESS=ON \
+		-DEVENT__DISABLE_BENCHMARK=ON \
+		-DOPENSSL_ROOT_DIR="$_deps/usr"
+	cmake --build build
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+}
+
+dev() {
+	replaces="libevent"
+	default_dev
+	if [ -d "$pkgdir"/usr/bin ]; then
+		mkdir -p "$subpkgdir"/usr
+		mv "$pkgdir"/usr/bin "$subpkgdir"/usr/
+	fi
+}
+
+sha512sums="
+5c7a1b9f48087258f49653ecb4ce24d7015a9ef4015ad6ffa910a101d5bd37c657c26fc948eaae30c4abeb54d1cda33290878161bd73bb50e4e85f7dc667c36d  libevent-2.1.13-stable.tar.gz
+"

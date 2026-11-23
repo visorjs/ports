@@ -1,0 +1,25 @@
+{
+  "project": "oxlint",
+  "package": "oxlint",
+  "description": "The linter the vite react template's lint script runs. Built from the oxc monorepo at the oxlint_v<version> tag, cross-checked against the release's npm provenance attestation. The features are upstream's own release line for this binding, build-napi-release: --release --features allocator. Versions: releases before 1.45.0 ship the oxlint executable (@oxlint/<platform>), not a napi binding, so there is no .node for this cdylib to stand in for (min). 1.45.0 has no oxlint_v1.45.0 tag upstream (git ls-remote), and 1.61.1 lists no optionalDependencies at all (deprecated upstream: accidentally published) and has neither tag nor attestation; both are denied.",
+  "source": {
+    "route": "git",
+    "url": "https://github.com/oxc-project/oxc.git",
+    "tag": "oxlint_v{version}",
+    "provenance": "attestation"
+  },
+  "build": {
+    "kind": "cargo",
+    "manifestPath": "apps/oxlint/Cargo.toml",
+    "features": ["allocator"],
+    "args": ["--lib"],
+    "output": "target/wasm64-visorjs-linux-musl/release/liboxlint.so"
+  },
+  "upstream": {
+    "platformPackages": ["@oxlint/binding-linux-x64-{libc}"]
+  },
+  "versions": {
+    "min": "1.45.0",
+    "deny": ["1.45.0", "1.61.1"]
+  }
+}

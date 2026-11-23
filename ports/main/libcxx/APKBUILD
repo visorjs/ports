@@ -1,0 +1,21 @@
+# Maintainer: visorjs <info@visorjs.com>
+pkgname=libcxx
+pkgver=21.1.8
+pkgrel=13
+pkgdesc="LLVM's C++ standard library (toolchain sysroot build)"
+url="https://libcxx.llvm.org"
+arch="wasm64"
+license="Apache-2.0 WITH LLVM-exception"
+options="!check !strip !archcheck"
+depends="libcxxabi>=21.1.8-r11 musl>=1.2.6-r28"
+
+# Same divergence and reasoning as ports/main/libcxxabi: this packages
+# the toolchain sysroot's libc++.so, the one every C++ object in the
+# tree links against, instead of building llvm-project from source. No
+# -dev subpackage for the same reason as musl.
+build() { :; } # the toolchain sysroot build is the build; packaging only
+
+package() {
+	install -D -m755 "$REACTOR_SYSROOT/lib/libc++.so" \
+		"$pkgdir/usr/lib/libc++.so.1"
+}

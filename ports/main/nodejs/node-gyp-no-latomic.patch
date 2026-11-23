@@ -1,0 +1,17 @@
+This sysroot has no libatomic: clang lowers wasm64's atomic operations
+inline and ships no separate runtime library for them, so the -latomic the
+linux+clang condition adds is unresolvable -- wasm-ld: error: unable to find
+library -latomic.
+
+--- a/node.gyp
++++ b/node.gyp
+@@ -544,9 +544,6 @@
+           '-Wl,-bnoerrmsg',
+         ],
+       }],
+-      ['OS=="linux" and clang==1', {
+-        'libraries': ['-latomic'],
+-      }],
+     ],
+   },
+ 

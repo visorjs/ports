@@ -1,0 +1,24 @@
+{
+  "project": "tailwindcss-oxide",
+  "package": "@tailwindcss/oxide",
+  "description": "Tailwind CSS v4's scanner, loaded by @tailwindcss/node and @tailwindcss/vite. The npm tarball ships no Rust source, so the git route takes the tailwindcss monorepo at the v<version> tag and cross-checks it against the release's npm provenance attestation (the packument carries no gitHead). Upstream's release line for this binding is crates/node's build:platform, napi build --platform --release, with no features. The one cdylib, tailwind-oxide, stands in for @tailwindcss/oxide-linux-x64-{gnu,musl}. Profile: upstream's wasm build (build:wasm, napi build --release --target wasm32-wasip1-threads) is panic=abort, its wasm32 target's strategy, and ships no name section (napi's post-link drops it), so the recipe sets panic abort and strip symbols; no #[napi] function here opts into catch_unwind, so a panic already aborts at the extern \"C\" boundary under unwind.",
+  "source": {
+    "route": "git",
+    "url": "https://github.com/tailwindlabs/tailwindcss.git",
+    "tag": "v{version}",
+    "provenance": "attestation"
+  },
+  "build": {
+    "kind": "cargo",
+    "manifestPath": "crates/node/Cargo.toml",
+    "args": ["--lib"],
+    "profile": {
+      "panic": "abort",
+      "strip": "symbols"
+    },
+    "output": "target/wasm64-visorjs-linux-musl/release/libtailwind_oxide.so"
+  },
+  "upstream": {
+    "platformPackages": ["@tailwindcss/oxide-linux-x64-{libc}"]
+  }
+}

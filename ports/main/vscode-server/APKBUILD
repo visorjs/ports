@@ -1,0 +1,170 @@
+# Maintainer: visorjs <info@visorjs.com>
+pkgname=vscode-server
+# The upstream release tag, from tools/vscode-server/pin.env; build() fails if
+# the two drift. The tree's own package.json says 1.135.0 — upstream bumps the
+# in-repo version at branch cut, so the tag is the release identity.
+pkgver=1.134.0
+pkgrel=6
+pkgdesc="VS Code remote extension host and browser workbench (vscode-reh-web)"
+url="https://github.com/microsoft/vscode"
+# noarch, and honestly so: package() drops the bundled linux node and every
+# prebuilt .node addon (see below), leaving a tree that is JavaScript, JSON
+# and static assets. `npm` is the sibling precedent for a noarch recipe that
+# depends on an arch-specific runtime.
+arch="noarch"
+license="MIT"
+# nodejs runs out/server-main.js; visor-pty is what the node-pty substitute
+# execs, and the pty host imports node-pty statically and unconditionally, so
+# it is a hard runtime dependency rather than an optional one.
+depends="nodejs visor-pty"
+options="!check !strip !archcheck"
+builddir="$srcdir"
+
+# No aports counterpart: Alpine packages no VS Code server, and the only
+# artifact Microsoft ships is proprietary. The tree packaged here is built
+# from MIT source by tools/vscode-server/build.sh; see its README for the
+# patch stack and why the base is vanilla upstream rather than a fork.
+#
+# Nothing is compiled here. Like the v8-shim recipe, this one packages a
+# build output that lives in the tree because there is no upstream tarball
+# carrying it: the server is a host-side gulp build (TypeScript, not wasm),
+# and rebuilding it inside abuild would need a second Docker image and
+# 15 minutes of node:24-bookworm.
+_tools="/work/tools/vscode-server"
+_pin="$_tools/pin.env"
+_subs="$_tools/substitutes"
+_build_hint="tools/vscode-server/build.sh"
+
+# Where the tree lands. One directory, because the server's HTTP /static/<p>
+# route serves out/, node_modules/, resources/ and extensions/ relative to
+# the install root.
+_libdir="/usr/lib/$pkgname"
+
+# The node the tree was built against, from the upstream remote/.npmrc
+# `target=`. The launcher refuses anything older.
+_nodemajor=24
+
+# aports parity note on the subpackage set: there is no -doc (the tree ships
+# no man pages or /usr/share/doc content), no -dev (no headers, no .pc), and
+# no -libs (nothing is linked against). -lang has no counterpart either: the
+# reh-web tree carries its NLS strings inside out/.
+subpackages=""
+
+# The launcher preamble, carried here the way openssl's 20-reactor.conf is:
+# configuration upstream's own build never produces.
+source="node-resolve.sh"
+
+_die_stage() {
+	die "$1 — build the server tree with \`$_build_hint\`"
+}
+
+build() {
+	test -f "$_pin" || _die_stage "no $_pin"
+	# The pin is the single source of truth for the version and the target.
+	# A bump there that this recipe has not followed is a build failure, not
+	# a silently mispackaged tree.
+	. "$_pin"
+	[ "$VSCODE_REF" = "$pkgver" ] || die \
+		"pin.env builds $VSCODE_REF but this recipe is pkgver=$pkgver — bump it"
+	_stage="$_tools/staging/vscode-reh-web-$VSCODE_TARGET_PLATFORM-$VSCODE_TARGET_ARCH"
+	test -d "$_stage" || _die_stage "no $_stage"
+	for _f in out/server-main.js product.json package.json \
+		"bin/$(_appname)" bin/remote-cli LICENSE; do
+		test -e "$_stage/$_f" || _die_stage "$_stage has no $_f"
+	done
+	# The substitutes are inputs, not options: without them the pty host and
+	# the recursive file watcher import a native addon that cannot load.
+	for _s in node-pty parcel-watcher ripgrep-universal; do
+		test -f "$_subs/$_s/package.json" \
+			|| die "no $_subs/$_s/package.json — the substitute set is incomplete"
+	done
+	echo "$_stage" > "$srcdir"/stage.path
+}
+
+# product.json's serverApplicationName, which is what gulp named bin/<...>.
+_appname() {
+	. "$_pin"
+	sed -n 's/.*"serverApplicationName"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+		"$_tools/staging/vscode-reh-web-$VSCODE_TARGET_PLATFORM-$VSCODE_TARGET_ARCH/product.json"
+}
+
+package() {
+	local stage="$(cat "$srcdir"/stage.path)"
+	local app="$(_appname)"
+	local cli="$(basename "$stage"/bin/remote-cli/*)"
+
+	install -d "$pkgdir$_libdir"
+	# Everything except the bundled node. `node` is a linux-x64/arm64 ELF
+	# binary downloaded by gulp; the guest's node comes from the nodejs apk.
+	for _e in bin extensions node_modules out resources \
+		package.json product.json; do
+		cp -a "$stage/$_e" "$pkgdir$_libdir/"
+	done
+	install -D -m644 "$stage/LICENSE" \
+		"$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+	test ! -e "$pkgdir$_libdir/node" || die "the bundled node was packaged"
+
+	_substitute "$pkgdir$_libdir" node-pty node-pty
+	_substitute "$pkgdir$_libdir" parcel-watcher @parcel/watcher
+	_substitute "$pkgdir$_libdir" ripgrep-universal @vscode/ripgrep-universal
+
+	# Every remaining .node is a linux-arm64/x64 N-API addon: spdlog,
+	# native-watchdog, sqlite3, kerberos, deviceid. All five are guarded at
+	# their import site and degrade to a JS path when the addon fails to
+	# load, and none can load in a wasm64 guest, so shipping the ELF is dead
+	# weight that also costs the package its noarch honesty. The require()
+	# still fails — with ENOENT instead of a bad ELF — which is the same
+	# branch those guards already take.
+	find "$pkgdir$_libdir" -name '*.node' -delete
+	if find "$pkgdir$_libdir" -name '*.node' | grep -q .; then
+		die "native addons survived the sweep"
+	fi
+
+	_launcher "$pkgdir$_libdir/bin/$app"
+	_launcher "$pkgdir$_libdir/bin/remote-cli/$cli"
+	# Upstream's own layout: the launchers stay inside the install root and
+	# are reached through a symlink, because each derives $ROOT by walking
+	# up from `readlink -f "$0"`.
+	install -d "$pkgdir/usr/bin"
+	ln -s "..${_libdir#/usr}/bin/$app" "$pkgdir/usr/bin/$app"
+	ln -s "..${_libdir#/usr}/bin/remote-cli/$cli" "$pkgdir/usr/bin/$cli"
+}
+
+# Drop substitutes/$1 over node_modules/$2, loudly.
+_substitute() {
+	local root="$1" src="$_subs/$2" dst="$3"
+	local target="$root/node_modules/$dst"
+	# The target must already exist: a substitute landing beside the native
+	# package instead of over it ships the unusable one, and a substitute
+	# for a package the tree no longer carries is dead weight.
+	test -d "$target" || die "no node_modules/$dst in the packaged tree"
+	local want="$(sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+		"$src/package.json" | head -n1)"
+	[ "$want" = "$dst" ] || die "$src/package.json is named $want, not $dst"
+	rm -rf "$target"
+	install -d "$target"
+	cp -a "$src/." "$target/"
+	test -f "$target/package.json" || die "$dst substitution left no package.json"
+}
+
+# Rewrite one generated launcher to run the guest's node.
+_launcher() {
+	local f="$1"
+	# The line gulp generates. Asserting on it makes a pin bump that changes
+	# the launcher a build failure rather than a script that still points at
+	# a node this package does not install.
+	grep -q '"\$ROOT/node"' "$f" || die "$f no longer invokes \$ROOT/node"
+	grep -q '^ROOT=' "$f" || die "$f no longer sets ROOT"
+	sed "s/@NODE_MAJOR@/$_nodemajor/" "$srcdir/node-resolve.sh" \
+		> "$srcdir/node-resolve.gen"
+	sed -i -e "/^ROOT=/r $srcdir/node-resolve.gen" \
+		-e 's|"\$ROOT/node"|"$VSCODE_NODE"|g' "$f"
+	if grep -q '"\$ROOT/node"' "$f"; then
+		die "$f still invokes \$ROOT/node"
+	fi
+	chmod 755 "$f"
+}
+
+sha512sums="
+c6527d99ef72309d76c4b5adff1159d00c1ba33f3ea966acb212499e7992a9d3ceab06a7cac58180bb8ca3b85c0ea6efd1955dfd41f109cb91a89220a9918299  node-resolve.sh
+"

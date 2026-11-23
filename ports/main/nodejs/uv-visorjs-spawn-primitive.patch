@@ -1,0 +1,152 @@
+Route uv_spawn's child half through the kernel's spawn primitive instead of
+fork+exec.
+
+The kernel performs the whole tail upstream runs in the forked child --
+resetting signal dispositions, placing the stdio descriptors, redirecting the
+ignored standard three to /dev/null, setsid, setgroups/setgid/setuid, chdir,
+the environment, the empty signal mask, and the PATH search execvp would have
+done -- so uv__spawn_and_init_child becomes a request struct and one syscall.
+uv__process_child_init, uv__spawn_and_init_child_fork, the error pipe with its
+uv__write_int/uv__write_errno pair and the cloexec_lock bracket all go with the
+fork they existed to serve. The syscall's return value replaces the error pipe
+outright: it is the child's pid, or a negative errno already shaped like
+UV__ERR, and the exec has already happened by the time it returns, so there is
+no window in which the parent must ask a not-yet-exec'd child how it went. The
+request layout and the syscall number are declared once, in the sysroot's
+visorjs-spawn.h; nothing here restates them.
+
+The request always carries an envp, because the kernel has no second source
+for one. A NULL options->env is upstream's execvpe(file, args, environ) case,
+so it becomes this process's live environ here rather than a 0 the kernel
+would have to reconstruct from the exec-time environ block -- a block musl
+leaves behind the moment a setenv reallocs __environ onto the heap. The
+kernel's PATH search reads the same vector, so a stale one resolves a
+different binary silently; a 0 is EINVAL there now.
+
+The deletion is the point, not the syscall. A fork() call site forces
+frame-record instrumentation onto every function that can be an ancestor of it,
+and a spawn issued from JS puts the whole JavaScript engine on that chain. A
+fallback that is never taken costs exactly the same, because that reachability
+is decided statically and an indirect call counts as may-reach -- so there is
+no runtime selection here and no second path to fall back to.
+
+The split is a #if rather than a delete only because deps/uv/uv.gyp builds
+libuv for both toolsets: node_js2c runs on the build machine and links the host
+copy, compiled by the host compiler against the build container's own include
+path, which carries no visorjs-spawn.h. That branch is upstream's, unmodified,
+and reaches no wasm binary -- preprocessed for this target, the file has no
+fork, vfork, execvp, execve, posix_spawn, setsid, setuid or sigprocmask left in
+it at all.
+
+Only the child half moves. uv_spawn keeps its handle registration, its SIGCHLD
+child_watcher, uv__process_init_stdio and uv__process_open_stream; both ends of
+every socketpair it made are still open in the caller when the syscall runs,
+which is what lets the kernel install the child's ends out of the caller's own
+descriptor table. src/spawn_sync.cc reaches this same uv_spawn on a private
+loop, so the synchronous API takes the path too.
+
+Upstream's first of two fd passes has no counterpart here. It exists only
+because dup2 rewrites a single table in place -- swapping stdout and stderr
+would otherwise clobber one with the other -- and the kernel builds the child's
+table from the caller's rather than mutating it, so no slot is ever both a
+source and a destination.
+
+--- a/deps/uv/src/unix/process.c
++++ b/deps/uv/src/unix/process.c
+@@ -34,6 +34,10 @@
+ #include <unistd.h>
+ #include <fcntl.h>
+ #include <poll.h>
++
++#if defined(__wasm__)
++# include <visorjs-spawn.h>
++#endif
+ 
+ #if defined(__APPLE__)
+ # include <spawn.h>
+@@ -265,7 +269,77 @@
+   uv__stream_close(container->data.stream);
+ }
+ 
++
++#if defined(__wasm__)
++static int uv__spawn_and_init_child(
++    uv_loop_t* loop,
++    const uv_process_options_t* options,
++    int stdio_count,
++    int (*pipes)[2],
++    pid_t* pid) {
++  struct visorjs_spawn_req req;
++  int32_t map_storage[8];
++  int32_t* stdio_map;
++  long r;
++  int fd;
+ 
++  (void) loop;  /* No error pipe to bracket, so no cloexec_lock either. */
++
++  /* One entry per child fd: the caller's fd to install there, or -1.
++   * uv__process_init_stdio has already left exactly that in pipes[fd][1]. */
++  stdio_map = map_storage;
++  if (stdio_count > (int) ARRAY_SIZE(map_storage)) {
++    stdio_map = uv__malloc(stdio_count * sizeof(*stdio_map));
++    if (stdio_map == NULL)
++      return UV_ENOMEM;
++  }
++
++  for (fd = 0; fd < stdio_count; fd++)
++    stdio_map[fd] = pipes[fd][1];
++
++  memset(&req, 0, sizeof(req));
++  req.file = (uint64_t) (uintptr_t) options->file;
++  req.argv = (uint64_t) (uintptr_t) options->args;
++  /* execvpe(options->file, options->args, environ) is what upstream runs
++   * for a NULL env, so a NULL one is this process's LIVE environ. envp is
++   * required: the kernel cannot read it back after a setenv has moved it. */
++  req.envp = (uint64_t) (uintptr_t)
++      (options->env != NULL ? options->env : environ);
++  req.cwd = (uint64_t) (uintptr_t) options->cwd;
++  req.stdio_map = (uint64_t) (uintptr_t) stdio_map;
++  req.stdio_count = (uint32_t) stdio_count;
++
++  if (options->flags & UV_PROCESS_DETACHED)
++    req.flags |= VISORJS_SPAWN_SETSID;
++
++  if (options->flags & UV_PROCESS_SETGID) {
++    req.flags |= VISORJS_SPAWN_SETGID;
++    req.gid = (uint32_t) options->gid;
++  }
++
++  if (options->flags & UV_PROCESS_SETUID) {
++    req.flags |= VISORJS_SPAWN_SETUID;
++    req.uid = (uint32_t) options->uid;
++  }
++
++  /* execvp searches only a name with no slash in it. */
++  if (strchr(options->file, '/') == NULL)
++    req.flags |= VISORJS_SPAWN_SEARCH_PATH;
++
++  r = visorjs_spawn(&req, sizeof(req));
++
++  if (stdio_map != map_storage)
++    uv__free(stdio_map);
++
++  if (r < 0)
++    return (int) r;  /* Already UV__ERR-shaped: errno is not folded. */
++
++  *pid = (pid_t) r;
++  return 0;
++}
++
++#else  /* !defined(__wasm__) */
++
+ static void uv__write_int(int fd, int val) {
+   ssize_t n;
+ 
+@@ -961,6 +1035,7 @@
+ 
+   return err;
+ }
++#endif  /* defined(__wasm__) */
+ #endif /* ISN'T TARGET_OS_TV || TARGET_OS_WATCH */
+ 
+ int uv_spawn(uv_loop_t* loop,

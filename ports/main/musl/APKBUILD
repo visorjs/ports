@@ -1,0 +1,109 @@
+# Maintainer: visorjs <info@visorjs.com>
+pkgname=musl
+pkgver=1.2.6
+pkgrel=31
+pkgdesc="musl libc shared library (toolchain sysroot build)"
+url="https://musl.libc.org"
+arch="wasm64"
+license="MIT AND LicenseRef-visorjs-proprietary"
+subpackages="$pkgname-utils:utils"
+options="!check !strip !archcheck"
+source="ldd.c"
+builddir="$srcdir"
+
+# Divergence from Alpine main/musl, platform-forced: this packages the
+# toolchain sysroot's libc.so instead of building musl from the release
+# tarball. The toolchain's musl is the one every other binary in the
+# tree is compiled and linked against — a second build from source would
+# be a different libc, and the wasm64 port lives in the toolchain rather
+# than in an upstream musl release. Alpine's -dev subpackage has no
+# counterpart for the same reason: the headers a recipe compiles against
+# are that same sysroot's, reached through $REACTOR_SYSROOT rather than
+# through a package. -dbg does not apply (wasm objects are not ELF), and
+# -libintl is a stub gettext shim this libc does not build. The installed
+# tree keeps /lib exactly as upstream main/musl does, abuild's usrmerge
+# warning included.
+
+build() {
+	# The ldd_mode half of vendor/musl/ldso/dynlink.c, as a program —
+	# see the divergence note in utils(). No setjmp/longjmp in this
+	# source, so none of the sjlj lowering the shells need applies.
+	$CC -std=c11 -O2 -DLDD_VERSION="\"$pkgver\"" \
+		-c "$srcdir/ldd.c" -o "$builddir/ldd.o"
+	$LD --entry-shape=dynamic "$builddir/ldd.o" -o "$builddir/ldd"
+}
+
+package() {
+	# Alpine ships the real file as /lib/ld-musl-$CARCH.so.1 with SONAME
+	# libc.musl-$CARCH.so.1 and a symlink of that name beside it; the
+	# link-time name /usr/lib/libc.so is a symlink back into /lib. This
+	# reproduces that tree with $CARCH filled in as wasm64.
+	install -D -m755 "$REACTOR_SYSROOT/lib/libc.so" \
+		"$pkgdir/lib/ld-musl-wasm64.so.1"
+	ln -s ld-musl-wasm64.so.1 "$pkgdir/lib/libc.musl-wasm64.so.1"
+	install -d "$pkgdir/usr/lib"
+	ln -s ../../lib/ld-musl-wasm64.so.1 "$pkgdir/usr/lib/libc.so"
+}
+
+utils() {
+	pkgdesc="the musl c library (libc) implementation - utilities"
+	depends="musl>=1.2.6-r28"
+	# Alpine's own backwards-compatibility provides; kept so a recipe or
+	# an apk world file written against Alpine resolves here too.
+	provides="libc-utils=$pkgver-r$pkgrel"
+
+	# /usr/bin/ldd. Alpine writes it as a two-line script that execs the
+	# dynamic loader — `exec /lib/ld-musl-$CARCH.so.1 --list "$@"` — and
+	# that is the one line of this subpackage the port cannot copy:
+	# /lib/ld-musl-wasm64.so.1 is a wasm shared object, not a program
+	# image, so nothing can exec it, and the loader it would have been
+	# is the kernel, which links a process at launch and answers no
+	# command line. The script therefore execs ldd.c, which is musl's
+	# own ldd_mode walk — same option parsing, same banner, same search
+	# order, same exit status — over the wasm dylink.0 NEEDED list
+	# instead of ELF DT_NEEDED. /usr/bin/ldd stays a script, as on
+	# Alpine, because every libc-detection consumer reads it as text.
+	# The helper sits out of $PATH: it is the loader's half, not a
+	# command.
+	install -D -m755 "$builddir/ldd" "$subpkgdir/usr/libexec/musl/ldd"
+	mkdir -p "$subpkgdir/usr/bin"
+	cat > "$subpkgdir/usr/bin/ldd" <<-EOF
+		#!/bin/sh
+		# musl libc, wasm64. Alpine execs /lib/ld-musl-\$CARCH.so.1
+		# here; that file is a wasm shared object no exec can run, so
+		# the loader's ldd half is a program of its own.
+		exec /usr/libexec/musl/ldd --list "\$@"
+	EOF
+	chmod 755 "$subpkgdir/usr/bin/ldd"
+
+	# /sbin/ldconfig. Alpine's is a shell script that runs scanelf over
+	# a directory and creates the missing SONAME symlinks. Both halves
+	# are gone here: there is no scanelf (pax-utils reads ELF), and a
+	# wasm shared object's soname lives in a reactor.soname section that
+	# every recipe already installs under. What remains is the part
+	# callers depend on — swallow the options, succeed — so a build
+	# script that ends in `ldconfig -n /usr/lib` does not fail. /sbin is
+	# where upstream main/musl installs it, so abuild's usrmerge warning
+	# rides along here the same way /lib's does above.
+	mkdir -p "$subpkgdir/sbin"
+	cat > "$subpkgdir/sbin/ldconfig" <<-'EOF'
+		#!/bin/sh
+		while getopts "nNvXvf:C:r:" opt; do
+			:
+		done
+		exit 0
+	EOF
+	chmod 755 "$subpkgdir/sbin/ldconfig"
+
+	# Not shipped, and deliberately: Alpine's musl-utils also carries
+	# getconf, getent and iconv, three C programs aports keeps beside
+	# its APKBUILD. They are not part of the dynamic-linking surface
+	# this subpackage exists for, nothing in the tree calls them, and
+	# carrying three more upstream sources here to answer a question
+	# nobody in this guest asks would be scope this recipe has not
+	# earned. A guest that needs one should get it as its own recipe.
+}
+
+sha512sums="
+39d5e403056a678eeffa2141bc8d1fafbc1b585656700e378b91159905ad051a333168cc38a9de079b37c462a58cd36f0bd2a69f652816d26d51c028fcfe0772  ldd.c
+"

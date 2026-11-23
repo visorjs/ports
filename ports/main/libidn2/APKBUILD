@@ -1,0 +1,95 @@
+# Maintainer: visorjs <info@visorjs.com>
+pkgname=libidn2
+pkgver=2.3.8
+pkgrel=8
+pkgdesc="Encode/Decode library for internationalized domain names"
+url="https://www.gnu.org/software/libidn#libidn2"
+arch="wasm64"
+license="GPL-2.0-or-later OR LGPL-3.0-or-later"
+depends="musl>=1.2.6-r28 libunistring"
+depends_dev="$pkgname=$pkgver-r$pkgrel libunistring-dev"
+subpackages="${pkgname#lib}-utils:utils $pkgname-static $pkgname-dev $pkgname-doc"
+options="!check !strip !archcheck"
+source="https://ftp.gnu.org/gnu/libidn/libidn2-$pkgver.tar.gz"
+
+_stage_deps() {
+	local deps="$srcdir/deps-staged"
+	apk add --root "$deps" --initdb --no-scripts --no-chown \
+		--arch "$CARCH" --keys-dir "${VISORJS_APK_KEYS:-/work/ports/keys}" \
+		--repository "$REPODEST/main" \
+		musl libunistring libunistring-dev \
+		|| die "staging the dependency root failed"
+
+	export CFLAGS="$CFLAGS -D__linux__ -D_GNU_SOURCE -I$deps/usr/include"
+	export CPPFLAGS="$CPPFLAGS -D__linux__ -D_GNU_SOURCE -I$deps/usr/include"
+	export LDFLAGS="$LDFLAGS -L$deps/usr/lib"
+	export PKG_CONFIG_PATH="$deps/usr/lib/pkgconfig:$deps/usr/share/pkgconfig"
+	export PKG_CONFIG_LIBDIR="$deps/usr/lib/pkgconfig:$deps/usr/share/pkgconfig"
+	_deps="$deps"
+}
+
+build() {
+	_stage_deps
+
+	./configure \
+		--build=$CBUILD \
+		--host=$CARCH-alpine-linux-musl \
+		--prefix=/usr \
+		--sysconfdir=/etc \
+		--mandir=/usr/share/man \
+		--infodir=/usr/share/info \
+		--disable-nls \
+		--with-libunistring-prefix="$_deps/usr" \
+		ac_cv_c_undeclared_builtin_options="none needed" \
+		ac_cv_func___fseterr=yes \
+		gl_cv_onwards_func___fseterr=yes \
+		ac_cv_func_fcntl=yes \
+		gl_cv_func_fcntl_f_dupfd_cloexec=yes \
+		gl_cv_func_fcntl_f_dupfd_works=yes \
+		gl_cv_func_dup2_works=yes
+
+	make -C gl
+	make -C unistring
+	make -C lib idna.lo lookup.lo decode.lo register.lo bidi.lo version.lo error.lo punycode.lo free.lo data.lo tr46map.lo tables.lo context.lo
+
+	llvm-ar rcs libidn2.a lib/.libs/*.o gl/.libs/*.o unistring/.libs/*.o
+	$LD --entry-shape=shared --soname libidn2.so.0 \
+		-Wl,--whole-archive libidn2.a -Wl,--no-whole-archive \
+		"$_deps/usr/lib/libunistring.so.5" \
+		"$REACTOR_SYSROOT/lib/libc.so" \
+		-o libidn2.so.0.4.0
+	ln -sf libidn2.so.0.4.0 libidn2.so.0
+	ln -sf libidn2.so.0.4.0 libidn2.so
+
+	make -C src idn2.o libidn2_cmd_la-idn2_cmd.lo
+	$CC src/idn2.o src/libidn2_cmd_la-idn2_cmd.o \
+		libidn2.so.0 \
+		"$_deps/usr/lib/libunistring.so.5" \
+		"$REACTOR_SYSROOT/lib/libc.so" \
+		-o src/idn2
+}
+
+package() {
+	mkdir -p "$pkgdir"/usr/lib "$pkgdir"/usr/include "$pkgdir"/usr/bin "$pkgdir"/usr/lib/pkgconfig
+	cp libidn2.a "$pkgdir"/usr/lib/
+	cp libidn2.so* "$pkgdir"/usr/lib/
+	cp lib/idn2.h "$pkgdir"/usr/include/
+	cp src/idn2 "$pkgdir"/usr/bin/
+	cp libidn2.pc "$pkgdir"/usr/lib/pkgconfig/
+
+	if [ -f doc/idn2.1 ]; then
+		install -Dm644 doc/idn2.1 "$pkgdir"/usr/share/man/man1/idn2.1
+	fi
+}
+
+utils() {
+	license='GPL-3.0-or-later'
+	pkgdesc="$pkgdesc (CLI utilities)"
+	depends="libidn2 musl>=1.2.6-r28"
+
+	amove usr/bin
+}
+
+sha512sums="
+4d8427c0f115268132f7544e80a808c883ab1406338f6c529b1a586b016d57aedb0857f66166eb8d9f37d70efc9dccf907b673b43b17bcf258c8797db1e829ce  libidn2-2.3.8.tar.gz
+"

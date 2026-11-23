@@ -1,0 +1,394 @@
+Guest-time census brackets on node's own fs request path.
+
+Each pair is one bucket in the shim's per-thread exclusive-time accumulator
+(packages/v8-shim/csrc/apistats.{h,cc}); src/reactor_census.h declares the
+seam once and carries the RAII span, so every return path out of a bracketed
+region closes its bucket. The hooks are empty inlines off the wasm64 target,
+and inside the shim the disarmed test is one plain bool load.
+
+AsyncWrap's 4-arg constructor delegates unconditionally to its 2-arg one, so
+only the 2-arg one opens async_wrap_ctor: the bucket counts once per
+constructed object rather than twice with the outer span nesting the inner.
+
+There is no fs_req_callback_ctor bucket. FSReqCallback's constructor body is
+empty -- all of its work is in the mem-initializer list, which runs before a
+span opened in the body could start -- and the FSReqBase constructor it
+delegates to has an empty body too, so there is nothing a bracket at either
+site could measure.
+
+--- a/src/reactor_census.h	1969-12-31 17:00:00
++++ b/src/reactor_census.h
+@@ -0,0 +1,95 @@
++#ifndef SRC_REACTOR_CENSUS_H_
++#define SRC_REACTOR_CENSUS_H_
++
++// Guest-time census hooks. Each pair opens and closes one bucket in the
++// shim's per-thread exclusive-time accumulator (packages/v8-shim/csrc/
++// apistats.{h,cc}), so a span's self time is node's own C++ inside it and
++// never a nested span or the JS below it.
++//
++// The definitions live in libv8_spidermonkey.a, which only the wasm64
++// target links; the host toolset has no shim, so there they are empty
++// inline functions the compiler deletes outright. Armed only when
++// REACTOR_V8_API_TIME or REACTOR_V8_API_STATS is set in the environment;
++// the disarmed test inside the shim is one plain bool load.
++
++#define REACTOR_CENSUS_HOOK_LIST(X)                                            \
++  X(make_callback)                                                             \
++  X(callback_scope_close)                                                      \
++  X(fs_after)                                                                  \
++  X(async_wrap_ctor)                                                           \
++  X(async_reset)                                                               \
++  X(emit_async_init)                                                           \
++  X(base_object_ctor)                                                          \
++  X(make_weak)                                                                 \
++  X(buffer_value)                                                              \
++  X(fs_req_init)                                                               \
++  X(dispatch)                                                                  \
++  X(env_current)                                                               \
++  X(fs_lstat)                                                                  \
++  X(fs_mkdir)                                                                  \
++  X(fs_open)                                                                   \
++  X(fs_close)                                                                  \
++  X(fs_write_buffer)
++
++#if defined(__wasm__)
++extern "C" {
++#define REACTOR_CENSUS_DECLARE(name)                                           \
++  void reactor_node_##name##_begin(void);                                      \
++  void reactor_node_##name##_end(void);
++REACTOR_CENSUS_HOOK_LIST(REACTOR_CENSUS_DECLARE)
++#undef REACTOR_CENSUS_DECLARE
++}
++#else
++#define REACTOR_CENSUS_DECLARE(name)                                           \
++  inline void reactor_node_##name##_begin(void) {}                             \
++  inline void reactor_node_##name##_end(void) {}
++REACTOR_CENSUS_HOOK_LIST(REACTOR_CENSUS_DECLARE)
++#undef REACTOR_CENSUS_DECLARE
++#endif
++
++// Both expansions are done; the list has no consumer outside this header,
++// and leaving the name defined leaks it into every translation unit that
++// includes node's headers.
++#undef REACTOR_CENSUS_HOOK_LIST
++
++namespace node {
++
++// A span that can be closed early and reopened, so a region with early
++// returns stays balanced and a nested JS call can be left outside it.
++class ReactorCensusSpan {
++ public:
++  ReactorCensusSpan(void (*begin)(), void (*end)())
++      : begin_(begin), end_(end) {
++    begin_();
++  }
++  ~ReactorCensusSpan() { Close(); }
++  void Close() {
++    if (open_) {
++      open_ = false;
++      end_();
++    }
++  }
++  void Reopen() {
++    if (!open_) {
++      open_ = true;
++      begin_();
++    }
++  }
++  ReactorCensusSpan(const ReactorCensusSpan&) = delete;
++  ReactorCensusSpan& operator=(const ReactorCensusSpan&) = delete;
++
++ private:
++  void (*begin_)();
++  void (*end_)();
++  bool open_ = true;
++};
++
++}  // namespace node
++
++// Opens `name`'s bucket for the rest of the enclosing scope. RAII, so every
++// return path -- including a throw -- closes it.
++#define REACTOR_CENSUS_SPAN(var, name)                                         \
++  ::node::ReactorCensusSpan var(&reactor_node_##name##_begin,                  \
++                                &reactor_node_##name##_end)
++
++#endif  // SRC_REACTOR_CENSUS_H_
+--- a/src/api/callback.cc
++++ b/src/api/callback.cc
+@@ -2,6 +2,7 @@
+ #include "async_wrap-inl.h"
+ #include "env-inl.h"
+ #include "node.h"
++#include "reactor_census.h"
+ #include "v8.h"
+ 
+ namespace node {
+@@ -113,6 +114,7 @@
+ void InternalCallbackScope::Close() {
+   if (closed_) return;
+   closed_ = true;
++  REACTOR_CENSUS_SPAN(reactor_close_span, callback_scope_close);
+ 
+   // This function must ends up with either cleanup the
+   // async id stack or pop the topmost one from it
+@@ -196,6 +198,7 @@
+                                        async_context asyncContext,
+                                        Local<Value> context_frame) {
+   CHECK(!recv.IsEmpty());
++  REACTOR_CENSUS_SPAN(reactor_mkcb_span, make_callback);
+ #ifdef DEBUG
+   for (int i = 0; i < argc; i++)
+     CHECK(!argv[i].IsEmpty());
+@@ -224,6 +227,9 @@
+   MaybeLocal<Value> ret;
+ 
+   Local<Context> context = env->context();
++  // The JS the callback runs is not node's C++, so the span is closed across
++  // it and reopened for the completion tail below.
++  reactor_mkcb_span.Close();
+   if (use_async_hooks_trampoline) {
+     MaybeStackBuffer<Local<Value>, 16> args(3 + argc);
+     args[0] = Number::New(env->isolate(), asyncContext.async_id);
+@@ -236,6 +242,8 @@
+   } else {
+     ret = callback->Call(context, recv, argc, argv);
+   }
++
++  reactor_mkcb_span.Reopen();
+ 
+   if (ret.IsEmpty()) {
+     scope.MarkAsFailed();
+--- a/src/async_wrap.cc
++++ b/src/async_wrap.cc
+@@ -25,6 +25,7 @@
+ #include "env-inl.h"
+ #include "node_errors.h"
+ #include "node_external_reference.h"
++#include "reactor_census.h"
+ #include "tracing/traced_value.h"
+ #include "util-inl.h"
+ 
+@@ -518,6 +519,7 @@
+                      ProviderType provider,
+                      double execution_async_id)
+     : AsyncWrap(env, object) {
++  // async_wrap_ctor opens in the delegated-to 2-arg ctor, once per object.
+   CHECK_NE(provider, PROVIDER_NONE);
+   provider_type_ = provider;
+ 
+@@ -528,6 +530,7 @@
+ 
+ AsyncWrap::AsyncWrap(Environment* env, Local<Object> object)
+     : BaseObject(env, object) {
++  REACTOR_CENSUS_SPAN(reactor_ctor_span, async_wrap_ctor);
+   set_context_frame(async_context_frame::current(env->isolate()));
+ }
+ 
+@@ -606,6 +609,7 @@
+ // and reused over their lifetime. This way a new uid can be assigned when
+ // the resource is pulled out of the pool and put back into use.
+ void AsyncWrap::AsyncReset(Local<Object> resource, double execution_async_id) {
++  REACTOR_CENSUS_SPAN(reactor_reset_span, async_reset);
+   CHECK_NE(provider_type(), PROVIDER_NONE);
+ 
+   if (async_id_ != kInvalidAsyncId) {
+@@ -644,6 +648,7 @@
+                               Local<String> type,
+                               double async_id,
+                               double trigger_async_id) {
++  REACTOR_CENSUS_SPAN(reactor_init_span, emit_async_init);
+   CHECK(!object.IsEmpty());
+   CHECK(!type.IsEmpty());
+   AsyncHooks* async_hooks = env->async_hooks();
+--- a/src/base_object.cc
++++ b/src/base_object.cc
+@@ -3,6 +3,7 @@
+ #include "memory_tracker-inl.h"
+ #include "node_messaging.h"
+ #include "node_realm-inl.h"
++#include "reactor_census.h"
+ 
+ namespace node {
+ 
+@@ -22,6 +23,7 @@
+ 
+ BaseObject::BaseObject(Realm* realm, Local<Object> object)
+     : persistent_handle_(realm->isolate(), object), realm_(realm) {
++  REACTOR_CENSUS_SPAN(reactor_ctor_span, base_object_ctor);
+   CHECK_EQ(false, object.IsEmpty());
+   CHECK_GE(object->InternalFieldCount(), BaseObject::kInternalFieldCount);
+   SetInternalFields(realm->isolate_data(), object, static_cast<void*>(this));
+@@ -50,6 +52,7 @@
+ }
+ 
+ void BaseObject::MakeWeak() {
++  REACTOR_CENSUS_SPAN(reactor_weak_span, make_weak);
+   if (has_pointer_data()) {
+     pointer_data()->wants_weak_jsobj = true;
+     if (pointer_data()->strong_ptr_count > 0) return;
+--- a/src/env-inl.h
++++ b/src/env-inl.h
+@@ -32,6 +32,7 @@
+ #include "node_internals.h"
+ #include "node_perf_common.h"
+ #include "node_realm-inl.h"
++#include "reactor_census.h"
+ #include "util-inl.h"
+ #include "uv.h"
+ #include "v8-cppgc.h"
+@@ -194,6 +195,9 @@
+ 
+ inline Environment* Environment::GetCurrent(
+     const v8::FunctionCallbackInfo<v8::Value>& info) {
++  // node.env_current.any_binding: reached by EVERY binding's
++  // GetCurrent, not just the fs path -- not readable as fs cost.
++  REACTOR_CENSUS_SPAN(reactor_env_span, env_current);
+   return GetCurrent(info.GetIsolate()->GetCurrentContext());
+ }
+ 
+--- a/src/node_file-inl.h
++++ b/src/node_file-inl.h
+@@ -4,6 +4,7 @@
+ #if defined(NODE_WANT_INTERNALS) && NODE_WANT_INTERNALS
+ 
+ #include "node_file.h"
++#include "reactor_census.h"
+ #include "req_wrap-inl.h"
+ 
+ namespace node {
+@@ -52,6 +53,7 @@
+                      const char* data,
+                      size_t len,
+                      enum encoding encoding) {
++  REACTOR_CENSUS_SPAN(reactor_init_span, fs_req_init);
+   syscall_ = syscall;
+   encoding_ = encoding;
+ 
+@@ -66,6 +68,7 @@
+ 
+ FSReqBase::FSReqBuffer&
+ FSReqBase::Init(const char* syscall, size_t len, enum encoding encoding) {
++  REACTOR_CENSUS_SPAN(reactor_init_span, fs_req_init);
+   syscall_ = syscall;
+   encoding_ = encoding;
+ 
+--- a/src/node_file.cc
++++ b/src/node_file.cc
+@@ -33,6 +33,7 @@
+ #include "node_url.h"
+ #include "path.h"
+ #include "permission/permission.h"
++#include "reactor_census.h"
+ #include "util-inl.h"
+ 
+ #include "tracing/trace_event.h"
+@@ -735,10 +736,12 @@
+       handle_scope_(wrap->env()->isolate()),
+       context_scope_(wrap->env()->context()) {
+   CHECK_EQ(wrap_->req(), req);
++  reactor_node_fs_after_begin();
+ }
+ 
+ FSReqAfterScope::~FSReqAfterScope() {
+   Clear();
++  reactor_node_fs_after_end();
+ }
+ 
+ void FSReqAfterScope::Clear() {
+@@ -1010,6 +1013,7 @@
+ 
+ void Close(const FunctionCallbackInfo<Value>& args) {
+   Environment* env = Environment::GetCurrent(args);
++  REACTOR_CENSUS_SPAN(reactor_body_span, fs_close);
+ 
+   const int argc = args.Length();
+   CHECK_GE(argc, 1);
+@@ -1173,6 +1177,7 @@
+   Realm* realm = Realm::GetCurrent(args);
+   BindingData* binding_data = realm->GetBindingData<BindingData>();
+   Environment* env = realm->env();
++  REACTOR_CENSUS_SPAN(reactor_body_span, fs_lstat);
+ 
+   const int argc = args.Length();
+   CHECK_GE(argc, 3);
+@@ -1922,6 +1927,7 @@
+ 
+ static void MKDir(const FunctionCallbackInfo<Value>& args) {
+   Environment* env = Environment::GetCurrent(args);
++  REACTOR_CENSUS_SPAN(reactor_body_span, fs_mkdir);
+ 
+   const int argc = args.Length();
+   CHECK_GE(argc, 3);
+@@ -2193,6 +2199,7 @@
+ 
+ static void Open(const FunctionCallbackInfo<Value>& args) {
+   Environment* env = Environment::GetCurrent(args);
++  REACTOR_CENSUS_SPAN(reactor_body_span, fs_open);
+ 
+   const int argc = args.Length();
+   CHECK_GE(argc, 3);
+@@ -2351,6 +2358,7 @@
+ //             if null, write from the current position
+ static void WriteBuffer(const FunctionCallbackInfo<Value>& args) {
+   Environment* env = Environment::GetCurrent(args);
++  REACTOR_CENSUS_SPAN(reactor_body_span, fs_write_buffer);
+ 
+   const int argc = args.Length();
+   CHECK_GE(argc, 4);
+--- a/src/node_realm-inl.h
++++ b/src/node_realm-inl.h
+@@ -5,6 +5,7 @@
+ 
+ #include "node_context_data.h"
+ #include "node_realm.h"
++#include "reactor_census.h"
+ #include "util-inl.h"
+ 
+ namespace node {
+@@ -27,6 +28,9 @@
+ 
+ inline Realm* Realm::GetCurrent(
+     const v8::FunctionCallbackInfo<v8::Value>& info) {
++  // node.env_current.any_binding: reached by EVERY binding's
++  // GetCurrent, not just the fs path -- not readable as fs cost.
++  REACTOR_CENSUS_SPAN(reactor_env_span, env_current);
+   return GetCurrent(info.GetIsolate()->GetCurrentContext());
+ }
+ 
+--- a/src/req_wrap-inl.h
++++ b/src/req_wrap-inl.h
+@@ -5,6 +5,7 @@
+ 
+ #include "req_wrap.h"
+ #include "async_wrap-inl.h"
++#include "reactor_census.h"
+ #include "uv.h"
+ 
+ namespace node {
+@@ -142,6 +143,7 @@
+ template <typename T>
+ template <typename LibuvFunction, typename... Args>
+ int ReqWrap<T>::Dispatch(LibuvFunction fn, Args... args) {
++  REACTOR_CENSUS_SPAN(reactor_dispatch_span, dispatch);
+   Dispatched();
+   // This expands as:
+   //
+--- a/src/util.cc
++++ b/src/util.cc
+@@ -31,6 +31,7 @@
+ #include "node_internals.h"
+ #include "node_snapshot_builder.h"
+ #include "node_v8_platform-inl.h"
++#include "reactor_census.h"
+ #include "string_bytes.h"
+ #include "v8-value.h"
+ 
+@@ -154,6 +155,7 @@
+ }
+ 
+ BufferValue::BufferValue(Isolate* isolate, Local<Value> value) {
++  REACTOR_CENSUS_SPAN(reactor_bv_span, buffer_value);
+   // Slightly different take on Utf8Value. If value is a String,
+   // it will return a Utf8 encoded string. If value is a Buffer,
+   // it will copy the data out of the Buffer as is.

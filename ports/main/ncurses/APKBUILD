@@ -1,0 +1,271 @@
+# Maintainer: visorjs <info@visorjs.com>
+pkgname=ncurses
+# aports tracks a patched snapshot (6.6_p2026…) off invisible-mirror;
+# this pins the last GNU release tarball, which is what ftp.gnu.org serves.
+pkgver=6.5
+pkgrel=8
+pkgdesc="Console display library"
+url="https://invisible-island.net/ncurses/"
+arch="wasm64"
+options="!check !strip !archcheck"
+license="X11"
+# aports carries no depends/depends_dev at all: tracedeps derives the .so
+# edges. Here tic/tput/clear -> libncursesw and the -dev symlinks are also
+# spelled out, with the musl floor tracedeps cannot add.
+depends="$pkgname-terminfo-base=$pkgver-r$pkgrel libncursesw=$pkgver-r$pkgrel musl>=1.2.6-r28"
+depends_dev="$pkgname=$pkgver-r$pkgrel $pkgname-libs=$pkgver-r$pkgrel
+	libncurses++=$pkgver-r$pkgrel"
+# aports spells this makedepends_build. build.sh installs $makedepends itself
+# and runs abuild -d, so makedepends_build would never be installed. It pulls
+# the host's aarch64 ncurses for $TIC_PATH: the wasm64 tic cannot be executed
+# by `make install.data`.
+makedepends="ncurses"
+subpackages="
+	$pkgname-static
+	$pkgname-dev
+	$pkgname-doc
+	$pkgname-terminfo-base:base:noarch
+	$pkgname-terminfo:terminfo:noarch
+	$pkgname-libs:compat:noarch
+	libformw
+	libmenuw
+	libncurses++:pp
+	libncursesw
+	libpanelw
+	"
+source="https://ftp.gnu.org/gnu/ncurses/ncurses-$pkgver.tar.gz
+	cleanup-pkgconfig-ldflags.patch
+	fix-soname.patch
+	"
+builddir="$srcdir/$pkgname-$pkgver"
+
+# Terminfo definitions to be included in ncurses-terminfo-base.
+_basic_terms="
+	alacritty
+	ansi
+	console
+	dumb
+	gnome
+	gnome-256color
+	konsole
+	konsole-256color
+	konsole-linux
+	linux
+	putty
+	putty-256color
+	rxvt
+	rxvt-256color
+	screen
+	screen-256color
+	st-*
+	sun
+	terminator
+	terminology*
+	tmux
+	tmux-256color
+	vt100
+	vt102
+	vt200
+	vt220
+	vt52
+	vte
+	vte-256color
+	xterm
+	xterm-256color
+	xterm-color
+	xterm-xfree86
+	"
+
+build() {
+	# aports builds in parallel; serialize here because ncurses generates
+	# sources into the shared model object dirs and races under -j.
+	export MAKEFLAGS="-j1"
+	export CFLAGS="$CFLAGS -D_GNU_SOURCE"
+	# reactor-c++ defaults to -fno-rtti; ncurses++ needs it.
+	export CXXFLAGS="$CXXFLAGS -frtti"
+
+	# wasm-ld rejects autoconf's `char f (void);` function probes on
+	# signature mismatch, so standard libc functions probe backwards;
+	# the ac_cv_* answers below provide the true libc capabilities.
+	# --with-build-cc uses host gcc for compiling host tools during build.
+	# aports passes --host=$CHOST; ports/abuild.conf leaves CHOST unset.
+	./configure \
+		--build=$CBUILD \
+		--host=$CARCH-alpine-linux-musl \
+		--prefix=/usr \
+		--mandir=/usr/share/man \
+		--without-ada \
+		--without-tests \
+		--disable-termcap \
+		--disable-root-access \
+		--disable-rpath-hack \
+		--disable-setuid-environ \
+		--disable-stripping \
+		--with-pkg-config-libdir=/usr/lib/pkgconfig \
+		--with-cxx-binding \
+		--with-cxx-shared \
+		--with-terminfo-dirs="/etc/terminfo:/usr/share/terminfo:/lib/terminfo:/usr/lib/terminfo" \
+		--enable-pc-files \
+		--enable-symlinks \
+		--with-shared \
+		--enable-widec \
+		--with-build-cc=gcc \
+		ac_cv_func_remove=yes \
+		ac_cv_func_unlink=yes \
+		ac_cv_func_link=yes \
+		ac_cv_func_symlink=yes \
+		ac_cv_func_putwc=yes \
+		ac_cv_func_btowc=yes \
+		ac_cv_func_wctob=yes \
+		ac_cv_func_wmemchr=yes \
+		ac_cv_func_mbtowc=yes \
+		ac_cv_func_wctomb=yes \
+		ac_cv_func_mblen=yes \
+		ac_cv_func_mbrlen=yes \
+		ac_cv_func_mbrtowc=yes \
+		ac_cv_func_wcsrtombs=yes \
+		ac_cv_func_mbsrtowcs=yes \
+		ac_cv_func_wcstombs=yes \
+		ac_cv_func_mbstowcs=yes \
+		ac_cv_func_strlcpy=yes \
+		ac_cv_func_snprintf=yes \
+		ac_cv_func_vsnprintf=yes \
+		ac_cv_func_putenv=yes \
+		ac_cv_func_setenv=yes \
+		ac_cv_func_strdup=yes \
+		ac_cv_func_fpathconf=yes \
+		ac_cv_func_getcwd=yes \
+		ac_cv_func_getauxval=yes \
+		ac_cv_func_getegid=yes \
+		ac_cv_func_geteuid=yes \
+		ac_cv_func_getopt=yes \
+		ac_cv_func_getuid=yes \
+		ac_cv_func_issetugid=no \
+		ac_cv_func_localeconv=yes \
+		ac_cv_func_poll=yes \
+		cf_cv_working_poll=yes \
+		ac_cv_func_select=yes \
+		ac_cv_func_setbuf=yes \
+		ac_cv_func_setbuffer=yes \
+		ac_cv_func_setvbuf=yes \
+		ac_cv_func_sigaction=yes \
+		ac_cv_func_strstr=yes \
+		ac_cv_func_sysconf=yes \
+		ac_cv_func_tcgetpgrp=yes \
+		ac_cv_func_times=yes \
+		ac_cv_func_tsearch=yes \
+		ac_cv_func_posix_openpt=yes \
+		ac_cv_func_fork=yes \
+		ac_cv_func_vfork=yes \
+		cf_cv_func_nanosleep=yes \
+		cf_cv_func_clock_gettime=yes \
+		cf_cv_func_mkstemp=yes
+	make -j1
+}
+
+package() {
+	make -j1 DESTDIR="$pkgdir" install
+
+	cd "$pkgdir"
+
+	# force link against *w.so
+	local lib; for lib in ncurses ncurses++ form panel menu; do
+		ln -s ${lib}w.pc usr/lib/pkgconfig/$lib.pc
+		ln -s lib${lib}w.a usr/lib/lib$lib.a
+		ln -s lib${lib}w.so usr/lib/lib$lib.so
+	done
+
+	# link curses, tic, tinfo -> ncurses
+	for lib in curses tic tinfo; do
+		ln -s libncurses.a usr/lib/lib${lib}.a
+		ln -s libncurses.so usr/lib/lib${lib}.so
+		ln -s ncurses.pc usr/lib/pkgconfig/${lib}.pc
+	done
+	ln -s libncursesw.so usr/lib/libcursesw.so
+
+	# Install basic terms in /etc/terminfo
+	local i; for i in $_basic_terms; do
+		local termfiles=$(find usr/share/terminfo/ -name "$i" 2>/dev/null) || true
+
+		[ -z "$termfiles" ] && continue
+
+		for termfile in $termfiles; do
+			local basedir=$(basename "$(dirname "$termfile")")
+			install -d etc/terminfo/$basedir
+			mv "$termfile" etc/terminfo/$basedir/
+			ln -s "../../../../etc/terminfo/$basedir/${termfile##*/}" \
+				"usr/share/terminfo/$basedir/${termfile##*/}"
+		done
+	done
+}
+
+terminfo() {
+	pkgdesc="$pkgdesc (other terminfo files)"
+	depends="$pkgname-terminfo-base=$pkgver-r$pkgrel"
+	replaces="kitty<0.25.2-r1"
+
+	amove usr/share/terminfo
+	# also move symlink
+	amove usr/lib/terminfo
+}
+
+compat() {
+	pkgdesc="Ncurses libraries (old compat to pull sublibs)"
+	provides="ncurses-widec-libs=$pkgver-r$pkgrel"
+	depends="
+		libformw=$pkgver-r$pkgrel
+		libmenuw=$pkgver-r$pkgrel
+		libncursesw=$pkgver-r$pkgrel
+		libpanelw=$pkgver-r$pkgrel
+		"
+
+	mkdir -p "$subpkgdir"
+}
+
+libmenuw() {
+	pkgdesc="$pkgdesc ($subpkgname)"
+	depends="$pkgname-terminfo-base=$pkgver-r$pkgrel musl>=1.2.6-r28"
+
+	amove usr/lib/libmenuw.so.*
+}
+
+libformw() {
+	pkgdesc="$pkgdesc ($subpkgname)"
+	depends="$pkgname-terminfo-base=$pkgver-r$pkgrel musl>=1.2.6-r28"
+
+	amove usr/lib/libformw.so.*
+}
+
+pp() {
+	pkgdesc="$pkgdesc ($subpkgname)"
+	depends="$pkgname-terminfo-base=$pkgver-r$pkgrel musl>=1.2.6-r28 libcxx"
+
+	amove usr/lib/libncurses++w.so.*
+}
+
+libncursesw() {
+	pkgdesc="$pkgdesc ($subpkgname)"
+	depends="$pkgname-terminfo-base=$pkgver-r$pkgrel musl>=1.2.6-r28"
+
+	amove usr/lib/libncursesw.so.*
+}
+
+libpanelw() {
+	pkgdesc="$pkgdesc ($subpkgname)"
+	depends="$pkgname-terminfo-base=$pkgver-r$pkgrel musl>=1.2.6-r28"
+
+	amove usr/lib/libpanelw.so.*
+}
+
+base() {
+	pkgdesc="Descriptions of common terminals"
+	depends=""
+
+	amove etc/terminfo
+}
+
+sha512sums="
+fc5a13409d2a530a1325776dcce3a99127ddc2c03999cfeb0065d0eee2d68456274fb1c7b3cc99c1937bc657d0e7fca97016e147f93c7821b5a4a6837db821e8  ncurses-6.5.tar.gz
+caa06c0cdd1ae61a453497b65d8263427fe5091ad5cfdc563d16d4e509fc2beb1b24ccf3456e5616796b2221c23ab877ccd9ccb668498346db2eb9e024f1b5e0  cleanup-pkgconfig-ldflags.patch
+9ccc728ff72f39e634f62d8aae412ce1cf958d5def7ea8ab5939bfc828ad0da030f7d19ca0567cf19646d184826b8e6fb897f6dc88b011ed39098f39788ccf62  fix-soname.patch
+"

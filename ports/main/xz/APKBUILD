@@ -1,0 +1,147 @@
+# Maintainer: visorjs <info@visorjs.com>
+pkgname=xz
+pkgver=5.8.3
+pkgrel=8
+pkgdesc="Library and CLI tools for XZ and LZMA compressed files"
+url="https://tukaani.org/xz/"
+arch="wasm64"
+license="GPL-2.0-or-later AND 0BSD AND Public-Domain AND LGPL-2.1-or-later"
+# Host tools only, as everywhere in this tree: build.sh apk-adds $makedepends
+# into the aarch64 build container before dropping to abuild. These are
+# aports' own; the source is a git tag archive with no generated configure
+# (aports switched away from the release tarball after CVE-2024-3094), so
+# autoreconf is not optional.
+makedepends="autoconf automake libtool gettext-tiny"
+# wasm64: aports leaves depends to tracedeps, which adds no musl floor.
+# The CLI tools link liblzma statically (see build()), so the main package
+# needs only libc; -dev owns the usr/lib/liblzma.so symlink and so needs
+# xz-libs.
+depends="musl>=1.2.6-r28"
+depends_dev="$pkgname=$pkgver-r$pkgrel $pkgname-libs=$pkgver-r$pkgrel"
+subpackages="$pkgname-static $pkgname-dev $pkgname-doc $pkgname-libs"
+options="!check !strip !archcheck"
+source="https://github.com/tukaani-project/xz/archive/refs/tags/v$pkgver/xz-$pkgver.tar.gz"
+
+# libtool's -version-info 13:3:8 in src/liblzma/Makefile.am gives soname
+# liblzma.so.5 and real file liblzma.so.5.8.3. That it equals $pkgver at
+# this release is a coincidence, not a derivation — recompute on a bump.
+_sover=5
+_solibver=5.8.3
+
+# secfixes:
+#   5.8.3-r0:
+#     - CVE-2026-34743
+#   5.8.1-r0:
+#     - CVE-2025-31115
+#   5.2.5-r1:
+#     - CVE-2022-1271
+#   5.6.1-r2:
+#     - CVE-2024-3094
+
+prepare() {
+	default_prepare
+	autoreconf -fi
+}
+
+# wasm64: no _stage_deps helper here. liblzma and the CLI need nothing but
+# libc, so there is no sibling wasm64 package to stage out of the local repo.
+build() {
+	# aports' CFLAGS override, verbatim.
+	CFLAGS="$CFLAGS -O3" \
+	./configure \
+		--build=$CBUILD \
+		--host=$CARCH-alpine-linux-musl \
+		--prefix=/usr \
+		--sysconfdir=/etc \
+		--mandir=/usr/share/man \
+		--infodir=/usr/share/info \
+		--localstatedir=/var \
+		--disable-rpath \
+		--disable-werror \
+		--disable-doc \
+		--disable-shared \
+		--enable-static \
+		--disable-symbol-versions \
+		--disable-nls \
+		--enable-sandbox=no \
+		ac_cv_search_clock_gettime="none required" \
+		ac_cv_func_clock_gettime=yes \
+		ac_cv_func_futimens=yes \
+		ac_cv_func_futimes=yes \
+		ac_cv_func_futimesat=yes \
+		ac_cv_func_utimes=yes \
+		ac_cv_func__futime=no \
+		ac_cv_func_utime=yes \
+		ac_cv_func_getrlimit=yes \
+		ac_cv_func_posix_fadvise=yes \
+		ac_cv_func_getopt_long=yes \
+		ac_cv_func_wcwidth=yes \
+		ac_cv_func_vasprintf=yes \
+		ac_cv_func_pthread_condattr_setclock=yes
+
+	# aports passes --host=$CHOST; ports/abuild.conf leaves CHOST unset, so
+	# the triplet is spelled from $CARCH, as every autotools recipe here does.
+
+	# wasm64 divergences in the switch list above, in order:
+	#   --disable-shared --enable-static  libtool does not know how to link
+	#     wasm shared objects (same finding as libunistring here), so it is
+	#     never asked to; liblzma.so.5 is linked by reactor-link below out
+	#     of the archive libtool did produce.
+	#   --disable-symbol-versions  symbol versioning feeds the linker a
+	#     version script; wasm-ld has no --version-script.
+	#   --disable-nls  there is no libintl on this platform — musl ships no
+	#     gettext runtime and this tree has no gettext port.
+	#   --enable-sandbox=no  all three of xz's sandboxes (Capsicum, pledge,
+	#     Landlock) are host-kernel facilities the visorjs kernel does not
+	#     implement. Left on "auto" the Landlock probe would also need
+	#     linux/landlock.h, which is not staged here.
+	# The ac_cv_* cache variables answer autoconf's AC_CHECK_FUNCS /
+	# AC_SEARCH_LIBS probes, whose `char f (void);` declarations wasm-ld
+	# rejects on signature mismatch so that every one of them would answer
+	# "no". Each value was resolved against the wasm64 sysroot's actual
+	# exports (llvm-nm --defined-only on libc.so): only _futime is genuinely
+	# absent, and it is a Windows CRT function.
+
+	sed -i \
+		-e 's|^hardcode_libdir_flag_spec=.*|hardcode_libdir_flag_spec=""|g' \
+		-e 's|^runpath_var=LD_RUN_PATH|runpath_var=DIE_RPATH_DIE|g' \
+		libtool
+	make
+
+	# The shared library aports gets from libtool. xz, xzdec, lzmadec and
+	# lzmainfo stay linked against liblzma.a as `make` built them — relinking
+	# four programs against this .so by hand would mean restating automake's
+	# object lists — but liblzma.so.5 is still shipped, because it is what
+	# every other port links against.
+	$LD --entry-shape=shared --soname liblzma.so.$_sover \
+		-Wl,--whole-archive src/liblzma/.libs/liblzma.a -Wl,--no-whole-archive \
+		"$REACTOR_SYSROOT/lib/libc.so" \
+		-o src/liblzma/.libs/liblzma.so.$_solibver
+}
+
+# wasm64: aports' check() is dropped — options="!check" everywhere in this
+# tree, because the build container cannot execute a wasm64 binary.
+
+package() {
+	make DESTDIR="$pkgdir" install
+
+	# --disable-shared means `make install` laid down no shared library; put
+	# the hand-linked one and the two symlinks libtool would have made in
+	# place by hand, as zlib and sqlite do here.
+	install -D -m755 src/liblzma/.libs/liblzma.so.$_solibver \
+		"$pkgdir"/usr/lib/liblzma.so.$_solibver
+	ln -s liblzma.so.$_solibver "$pkgdir"/usr/lib/liblzma.so.$_sover
+	ln -s liblzma.so.$_solibver "$pkgdir"/usr/lib/liblzma.so
+}
+
+libs() {
+	pkgdesc="$pkgdesc (liblzma)"
+	# wasm64: aports relies on abuild's default_libs plus tracedeps for the
+	# runtime edge; the musl floor is a version tracedeps cannot add.
+	depends="musl>=1.2.6-r28"
+	amove usr/lib/liblzma.so.*
+}
+
+sha512sums="
+8fb5e6a13397d259d8ff7484f9b63f8a6752ff1c63e1a4601170ad8175aadefb5126a1cae7f73370bfc6c2a0b4e1c0bad57a58fc5b781d3f7d45e5a483c091cc  xz-5.8.3.tar.gz
+"

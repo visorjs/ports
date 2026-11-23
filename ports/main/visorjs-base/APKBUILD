@@ -1,0 +1,115 @@
+# Maintainer: visorjs <info@visorjs.com>
+pkgname=visorjs-base
+pkgver=1
+pkgrel=13
+pkgdesc="visorjs base rootfs meta package: /etc files and repository config"
+url="http://repo.visorjs.internal"
+arch="wasm64"
+license="LicenseRef-visorjs-proprietary"
+pkggroups="shadow"
+# The closure Alpine's own minirootfs has: busybox, apk-tools, musl. /bin/sh
+# is busybox ash (busybox-binsh), which is what gives the console line
+# editing, history and completion — busybox's built-in line editor, no
+# libedit anywhere.
+# icu-data-full is not base-level either: the package that reads it
+# (nodejs) depends on it.
+# musl-utils is base-level for the same reason it is in Alpine's base
+# install: it owns /usr/bin/ldd, and a guest's libc identity is read off
+# that file. npm, pnpm's detect-libc and every napi-rs loader look for it
+# first, and with no ldd anywhere they conclude the libc is unknown and
+# skip the musl-tagged native binding.
+# visorjs-init is base-level because every boot site runs /bin/init as pid 1,
+# and no host writes guest binaries into the root.
+depends="musl musl-utils busybox busybox-binsh apk-tools zlib libcrypto3
+	libssl3 visorjs-keys visorjs-init"
+options="!check !strip !archcheck"
+builddir="$srcdir/build"
+
+# /etc/services and /etc/protocols, from the same Debian netbase release
+# Alpine's alpine-baselayout-data takes them from. musl carries a built-in
+# protocol table, so getprotobyname works without the file, but
+# getservbyname/getservbyport read /etc/services and fail with
+# "port/proto not found" when it is absent -- which it was until now.
+_nbver=6.4
+source="protocols-$_nbver::https://salsa.debian.org/md/netbase/-/raw/v$_nbver/etc/protocols
+	services-$_nbver::https://salsa.debian.org/md/netbase/-/raw/v$_nbver/etc/services
+	profile
+	group
+	passwd
+	"
+
+# Single substitution point for where the built repo is served from.
+# The deployed repo URL is finalized by exporting REPO_URL before
+# invoking abuild; this is the only substitution point.
+REPO_URL="${REPO_URL:-http://repo.visorjs.internal:8788/visorjs}"
+
+prepare() {
+	default_prepare
+	mkdir -p "$builddir"
+}
+
+# alpine-baselayout's /etc/passwd and /etc/group (3.7.2, aports 3.24-stable),
+# unmodified, plus the workbench's user account. Alpine's system ids are what
+# an in-guest addgroup -S / adduser -S counts from. /etc/shadow is generated
+# from passwd as alpine-baselayout's build() does: root's password empty,
+# every other account (user included) locked.
+build() {
+	cat "$srcdir"/passwd - > passwd <<-EOF
+		user:x:1000:1000:user:/home/user:/bin/sh
+	EOF
+	cat "$srcdir"/group - > group <<-EOF
+		user:x:1000:
+	EOF
+	awk -F: '{
+		pw = ":!:"
+		if ($1 == "root") { pw = "::" }
+		print($1 pw ":0:::::")
+	}' passwd > shadow
+}
+
+package() {
+	install -d -m755 "$pkgdir/etc/apk"
+
+	cat > "$pkgdir/etc/hosts" <<-EOF
+		127.0.0.1 localhost
+		::1 localhost
+	EOF
+
+	cat > "$pkgdir/etc/resolv.conf" <<-EOF
+		nameserver 127.0.0.53
+	EOF
+
+	install -m644 "$builddir"/passwd "$builddir"/group "$pkgdir"/etc/
+	install -m640 -g shadow "$builddir"/shadow "$pkgdir"/etc/
+
+	cat > "$pkgdir/etc/apk/repositories" <<-EOF
+		$REPO_URL/main
+	EOF
+
+	# apk's own global options, one `key value` line each, read before argv
+	# so an explicit --wait still wins. The boot's device-grant reconcile
+	# takes apk's exclusive db lock concurrently with pid 1, and a guest apk
+	# knows nothing about that lock: without a default wait it hard-fails on
+	# a collision it cannot see. 60s matches the reconcile's own budget, so
+	# the wait outlasts any hold the reconcile can legitimately take.
+	cat > "$pkgdir/etc/apk/config" <<-EOF
+		wait 60
+	EOF
+
+	install -Dm644 "$srcdir"/protocols-$_nbver "$pkgdir"/etc/protocols
+	install -Dm644 "$srcdir"/services-$_nbver "$pkgdir"/etc/services
+
+	# alpine-baselayout's /etc/profile, unmodified. It owns the system PATH,
+	# and its /usr/local half is what npm's prefix (/usr/local, per npm's
+	# npmrc) installs global bins into -- without this file every
+	# `npm i -g` lands somewhere no shell looks.
+	install -Dm644 "$srcdir"/profile "$pkgdir"/etc/profile
+	install -d -m755 "$pkgdir/etc/profile.d"
+}
+sha512sums="
+3a00083bcdf5a9e884c9d07877d52311e3d99e79cbee656e236ba06e08ba0dddb7ba76494fdc9dd1a826c48e197a790a69e6bb458e9df64832d6b5e904e9fd15  protocols-6.4
+47b0f3ee73af2d259bd206a026204be0ea25531a895a0b035a904b38fe5407bc3dd2beab7f8fcb3d760587e6159702ebdb9cbc4f508942befdf7f10c10c87888  services-6.4
+4eb857ed59c2edb257636d2bf196989e514a273e9701e9f076c9ae8c1589b4898269180569960acf072c0981ec7ea54014fd230f014401d6bb92314285d1e6aa  profile
+b5eb01165c714861e860f17c0156911ff882a9010306b7fc4cdb22251acf8b1c91a3fa1d44cc41cb3d9b50892e2f98f43da57b002c5c33200c1bf49c3d2d587d  group
+f0d12f365839e7e262ec91e151119de7f2f253e9d0443157de4d52e183f421fbbb9eb0a83b9267a9ee850bebe41bff3c3cef553f9bda6e70d59a754a955be57d  passwd
+"

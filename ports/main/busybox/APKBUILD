@@ -1,0 +1,410 @@
+# Maintainer: visorjs <info@visorjs.com>
+pkgname=busybox
+pkgver=1.38.0
+pkgrel=12
+pkgdesc="Size optimized toolbox of many common UNIX utilities"
+url="https://busybox.net/"
+arch="wasm64"
+license="GPL-2.0-only"
+depends="musl>=1.2.6-r28"
+# perl is upstream's makedepends_build: the documentation targets shell out
+# to pod2man and silently produce nothing without it, which would leave the
+# -doc subpackage empty. bash is pinned exactly: Alpine's mirror keeps only
+# the current pkgrel, so an upstream bump makes this `apk add` fail with
+# "unable to select packages", and the fix is to bump the pin rather than to
+# unpin it.
+#
+# Upstream's makedepends_host — linux-headers, openssl-dev>3, utmps-dev,
+# utmps-static — are host packages there and wasm64 ones here, so they are
+# not in this list: linux-headers, openssl-dev, libcrypto3 and libssl3 are
+# this tree's own packages, staged from the signed repo into a private root
+# in prepare() the way nodejs stages its siblings. utmps has
+# no package here at all, which is exactly upstream's own BOOTSTRAP path —
+# see build().
+makedepends="perl bash=5.3.9-r1"
+install="$pkgname.post-install $pkgname.post-upgrade
+	$pkgname-extras.post-install $pkgname-extras.pre-deinstall"
+subpackages="
+	$pkgname-static
+	$pkgname-doc
+	$pkgname-suid
+	ssl_client
+	$pkgname-ifupdown::noarch
+	$pkgname-binsh::noarch
+	$pkgname-extras
+	"
+options="!check !strip !archcheck suid"
+triggers="busybox.trigger=/bin:/usr/bin:/sbin:/usr/sbin:/lib/modules/*:/usr/lib/modules/*"
+source="https://busybox.net/downloads/busybox-$pkgver.tar.bz2
+	0001-ash-exec-busybox.static.patch
+	0002-awk-fix-handling-of-literal-backslashes-in-replaceme.patch
+	0003-blkdiscard-ship-link-to-sbin-instead-of-usr-bin.patch
+	0004-hexdump-fix-regression-with-n4-e-u.patch
+	0005-init-add-support-for-separate-reboot-action.patch
+	0006-mount-fix-parsing-proc-mounts-with-long-lines.patch
+	0007-tar-fix-TOCTOU-symlink-race-condition.patch
+	0008-tunctl-fix-segfault-on-ioctl-failure.patch
+	0009-wget-add-header-Accept.patch
+	0010-adduser-default-to-sbin-nologin-as-shell-for-system-.patch
+	0011-ash-add-built-in-BB_ASH_VERSION-variable.patch
+	0012-Avoid-redefined-warnings-when-buiding-with-utmps.patch
+	0013-libbb-sockaddr2str-ensure-only-printable-characters-.patch
+	0014-modinfo-add-k-option-for-kernel-version.patch
+	0015-nologin-Install-applet-to-sbin-instead-of-usr-sbin.patch
+	0016-pgrep-add-support-for-matching-against-UID-and-RUID.patch
+	0017-properly-fix-wget-https-support.patch
+	0018-fsck-resolve-LABEL-.-UUID-.-spec-to-device.patch
+	0019-nslookup-sanitize-all-printed-strings-with-printable.patch
+	0020-app-location-for-cpio-vi-and-lspci.patch
+	0021-udhcpc-set-default-discover-retries-to-5.patch
+	0022-ping-make-ping-work-without-root-privileges.patch
+	0023-fbsplash-support-console-switching.patch
+	0024-fbsplash-support-image-and-bar-alignment-and-positio.patch
+	0025-depmod-support-generating-kmod-binary-index-files.patch
+	0026-Add-flag-for-not-following-symlinks-when-recursing.patch
+	0027-udhcpc-Don-t-background-if-n-is-given.patch
+	0028-tests-fix-tarball-creation.patch
+	0029-tests-musl-doesn-t-seem-to-recognize-UTC0-as-a-timez.patch
+	0030-Hackfix-to-disable-HW-acceleration-for-MD5-SHA1-on-x.patch
+	0031-umount-Implement-O-option-to-unmount-by-mount-option.patch
+	0032-find-fix-xdev-depth-and-delete.patch
+	0033-awk.c-fix-CVE-2023-42366-bug-15874.patch
+	0034-awk-Mark-test-for-handling-of-start-of-word-pattern-.patch
+	0035-syslogd-fix-wrong-OPT_locallog-flag-detection.patch
+	0036-Fix-CVE-2024-58251-sanitize-process-names-when-calli.patch
+	0037-Skip-additional-hexdump-test-on-big-endian-systems.patch
+	0038-ash-clear-bb_got_signal-for-non-interactive-shell.patch
+	0039-Install-lsblk-to-bin-instead-of-usr-bin.patch
+	0040-ash-fix-out-of-bounds-read-in-ifsbreakup.patch
+
+	acpid.logrotate
+	busyboxconfig
+	busyboxconfig-extras
+	bbsuid.c
+	dad.if-up
+	ssl_client.c
+	default.script
+	udhcpc.conf
+	securetty
+	acpid-poweroff.sh
+	"
+
+# This recipe mirrors aports' main/busybox. Every file in source= above is
+# byte-identical to that recipe's copy, checksums included — all forty
+# patches, both configs, and the auxiliary sources — and so are the
+# install= and triggers= scripts, which create the applet links in-guest.
+# Patches are carried whole rather than filtered down to the applets this
+# tree exercises: staying byte-identical to aports is worth more than
+# dropping hunks that cost nothing.
+#
+# Unlike zlib and sqlite, this recipe drives upstream's own make.
+# Everything that made those refuse to is absent here:
+#   - Kbuild links through $(CC), and reactor-cc is a link driver: an
+#     invocation with no -c/-E/-S and at least one input is a link, handed
+#     to reactor-link under an inferred entry shape. With no -shared, no
+#     soname and a non-lib*.so* output that shape is `dynamic`, which is
+#     the shape every end-user binary in this tree links with anyway.
+#   - scripts/trylink probes by compiling and linking, never by running
+#     what it built. So --sort-common, --sort-section, --warn-common, -Map
+#     and --verbose drop themselves when wasm-ld rejects them, and
+#     check_libc_is_glibc answers correctly from a compile alone. That is
+#     the property the ports contract's configure-script rule turns on.
+#   - SKIP_STRIP=y is upstream's own knob, so the ELF strip that cannot
+#     read a wasm object is never invoked — the same reason every recipe
+#     here sets options="!strip".
+#
+# Divergences from aports' build, each also commented at its line below:
+#   - CC/HOSTCC are passed on the make command line. Kbuild assigns
+#     `CC = $(CROSS_COMPILE)gcc` in the Makefile, and a makefile assignment
+#     beats the environment, so abuild's exported CC would otherwise be
+#     ignored and the container's own gcc would build wasm-bound objects.
+#   - No utmps. Upstream feeds CONFIG_EXTRA_CFLAGS/CONFIG_EXTRA_LDLIBS from
+#     `pkg-config --static libutmps` unless BOOTSTRAP is set; there is no
+#     utmps package in this tree, so this is upstream's own BOOTSTRAP path
+#     with the empty values it produces.
+#   - ssl_client links this tree's libssl/libcrypto by path rather than
+#     through pkg-config against the build host.
+
+# The build host's own compiler, for Kbuild's host-side codegen (fixdep,
+# the kconfig parser, applet_tables, usage_pod). The toolchain image puts
+# the patched clang first on PATH; with no --target it builds for the
+# container.
+_cc_host="clang"
+
+_staticdir="$srcdir"/build-static
+_dyndir="$srcdir"/build-dynamic
+_dyndir_extras="$srcdir"/build-dynamic-extras
+_config="$srcdir"/busyboxconfig
+_config_extras="$srcdir"/busyboxconfig-extras
+_deps="$srcdir"/deps
+
+# Platform additions to every target compile, passed through the config's
+# own CONFIG_EXTRA_CFLAGS so they reach both the compile and the trylink
+# link line:
+#   -I$_deps/usr/include: the kernel UAPI headers, from this tree's
+#   linux-headers package staged in prepare(). Upstream gets the same set
+#   from its linux-headers makedepends_host; musl ships none of them, and
+#   its own bits/kd.h and bits/vt.h include linux/kd.h and linux/vt.h.
+#   -D__linux__: the wasm64 target does not define __linux__, so busybox's
+#   platform.h and every applet that guards a linux/*.h include on it
+#   would compile against a truncated view of the headers.
+#   -mllvm -wasm-enable-sjlj / -mexception-handling: ash's error recovery
+#   and every applet reached through bb_error_msg_and_die longjmp out, and
+#   this platform lowers setjmp/longjmp to the wasm exception-handling tag
+#   libc.so defines.
+_platform_cflags="-I$_deps/usr/include -D__linux__=1 -mllvm -wasm-enable-sjlj -mexception-handling"
+
+prepare() {
+	# remove SGID if set as it confuses the busybox testsuite
+	chmod -R g-s "$builddir"
+	default_prepare
+
+	mkdir -p "$_staticdir" "$_dyndir" "$_dyndir_extras"
+
+	# A private root installed from the local signed repo, for ssl_client:
+	# apk takes each version from the index, so no version is written down
+	# twice. libcrypto3 and libssl3 are named beside openssl-dev because
+	# that -dev package does not depend on the runtime halves carrying the
+	# .so files. --no-chown is what lets this run as the builder user
+	# abuild drops to, and --no-scripts because a post-install script is
+	# #!/bin/sh and apk runs it chrooted into a root with no shell.
+	apk add --root "$_deps" --initdb --no-scripts --no-chown \
+		--arch "$CARCH" --keys-dir "${VISORJS_APK_KEYS:-/work/ports/keys}" \
+		--repository "$REPODEST/main" \
+		linux-headers openssl-dev libcrypto3 libssl3 \
+		|| die "staging the dependency root failed"
+}
+
+# One build tree. Upstream's own comment on the duplicated command lines
+# below still applies — the busybox build system breaks on any attempt to
+# factorize it — but what it breaks on is factorizing the *make* calls, and
+# this wrapper only factorizes the two constants every one of them passes.
+_make() {
+	# CONFIG_EXTRA_CFLAGS/CONFIG_EXTRA_LDLIBS are upstream's utmps hook,
+	# empty here (see the header comment). CONFIG_EXTRA_CFLAGS carries this
+	# platform's additions instead.
+	make CC="$CC" HOSTCC="$_cc_host" SKIP_STRIP=y \
+		CONFIG_EXTRA_CFLAGS="$_platform_cflags" \
+		CONFIG_EXTRA_LDLIBS="\"\"" "$@"
+}
+
+build() {
+	# build bbsuid
+	msg "Building bbsuid"
+	$CC $CPPFLAGS $CFLAGS $LDFLAGS $_platform_cflags \
+		"$srcdir"/bbsuid.c -o "$_dyndir"/bbsuid
+
+	msg "Building ssl_client"
+	# Upstream resolves libcrypto/libssl with pkg-config against the build
+	# host; this links the wasm64 ones this tree built, out of the staged
+	# root, by path. The soname each of them was linked with is what ends
+	# up in NEEDED, so naming the versioned file here is correct.
+	$CC $CPPFLAGS $CFLAGS $LDFLAGS $_platform_cflags \
+		-I"$_deps"/usr/include \
+		"$srcdir"/ssl_client.c -o "$_dyndir"/ssl_client \
+		"$_deps"/usr/lib/libssl.so.3 "$_deps"/usr/lib/libcrypto.so.3
+
+	# build dynamic
+	cd "$_dyndir"
+	msg "Building dynamic busybox"
+	cp "$_config" .config
+	make -C "$builddir" O="$PWD" HOSTCC="$_cc_host" silentoldconfig
+	_make
+
+	# build dynamic (extras)
+	cd "$_dyndir_extras"
+	msg "Building dynamic busybox-extras"
+	cp "$_config_extras" .config
+	make -C "$builddir" O="$PWD" HOSTCC="$_cc_host" silentoldconfig
+	_make
+
+	# build static
+	cd "$_staticdir"
+	msg "Building static busybox"
+	# enable internal ssl_client for static build
+	sed -e "s/.*CONFIG_PIE.*/\# CONFIG_PIE is not set/" \
+		-e "s/.*CONFIG_STATIC\([A-Z_]*\).*/CONFIG_STATIC\1=y/" \
+		-e "s/.*CONFIG_SSL_CLIENT.*/CONFIG_SSL_CLIENT=y/" \
+		"$_config" > .config
+	make -C "$builddir" O="$PWD" HOSTCC="$_cc_host" silentoldconfig
+	# reactor-cc's shape inference only ever yields `dynamic` or `shared`;
+	# `process` is this toolchain's static shape (crt1.o plus libc.a by
+	# path), and naming it explicitly is the only way to reach it through a
+	# build system that links by calling the compiler. reactor-cc consumes
+	# --entry-shape= itself rather than passing it to clang, so it is safe
+	# in LDFLAGS, which trylink hands to the link line only.
+	_make LDFLAGS="--entry-shape=process"
+	mv busybox busybox.static
+}
+
+package() {
+	install -d "$pkgdir"/usr/sbin "$pkgdir"/usr/bin "$pkgdir"/bin "$pkgdir"/sbin
+
+	cd "$_dyndir"
+	install -Dm755 busybox "$pkgdir"/bin/busybox
+	install -Dm644 docs/busybox.1 "$pkgdir"/usr/share/man/man1/busybox.1
+	install -Dm644 "$builddir/docs/mdev.txt" "$pkgdir"/usr/share/doc/busybox/mdev.txt
+
+	#ifupdown needs those dirs to be present
+	install -d \
+		"$pkgdir"/etc/network/if-down.d \
+		"$pkgdir"/etc/network/if-post-down.d \
+		"$pkgdir"/etc/network/if-post-up.d \
+		"$pkgdir"/etc/network/if-pre-down.d \
+		"$pkgdir"/etc/network/if-pre-up.d \
+		"$pkgdir"/etc/network/if-up.d
+	install -Dm775 "$srcdir"/dad.if-up "$pkgdir"/etc/network/if-up.d/dad
+
+	install -Dm644 "$srcdir"/acpid.logrotate \
+		"$pkgdir/etc/logrotate.d/acpid"
+
+	install -Dm644 "$srcdir"/udhcpc.conf "$pkgdir"/etc/udhcpc/udhcpc.conf
+	install -Dm644 "$srcdir"/securetty "$pkgdir"/etc/securetty
+
+	# script for udhcpc
+	install -Dm755 "$srcdir"/default.script \
+		"$pkgdir"/usr/share/udhcpc/default.script
+
+	# Upstream installs this list from `busybox --list-path`, guarded on a
+	# native build because that runs the binary. busybox.links is the same
+	# list from the same source, produced by the host preprocessor, so it
+	# needs no such guard. A root assembled without running scripts gets
+	# its applet links from this list (ports/README.md).
+	_make busybox.links
+	sed 's:^:/:' busybox.links | sed 's://*:/:g' \
+		| install -Dm644 /dev/stdin "$pkgdir"/etc/busybox-paths.d/busybox
+}
+
+extras() {
+	pkgdesc="Additional binaries of Busybox"
+	depends="$pkgname=$pkgver-r$pkgrel musl>=1.2.6-r28"
+	install -Dm755 "$_dyndir_extras"/busybox "$subpkgdir"/bin/busybox-extras
+
+	# busybox.links is a dependency of the `install` target, not of `all`,
+	# and this tree is only ever built — so ask for it by name. Without
+	# this the file below is silently empty: sed's failure is invisible
+	# through a pipeline whose exit status is install's.
+	( cd "$_dyndir_extras" && _make busybox.links )
+
+	# Same substitution as the main package: the path list comes from
+	# busybox.links rather than from running the binary.
+	sed 's:^:/:' "$_dyndir_extras"/busybox.links | sed 's://*:/:g' \
+		| install -Dm644 /dev/stdin \
+			"$subpkgdir"/etc/busybox-paths.d/busybox-extras
+
+	# Configuration file and lease directory used by udhcpd which
+	# is part of busybox-extras, hence the files are installed here.
+	install -d "$subpkgdir"/var/lib/udhcpd
+	install -Dm644 "$builddir"/examples/udhcp/udhcpd.conf \
+		"$subpkgdir"/etc/udhcpd.conf
+}
+
+suid() {
+	pkgdesc="suid binaries of Busybox"
+	depends="$pkgname=$pkgver-r$pkgrel musl>=1.2.6-r28"
+
+	cd "$_dyndir"
+	install -Dm4111 bbsuid "$subpkgdir"/bin/bbsuid
+}
+
+static() {
+	pkgdesc="Statically linked Busybox"
+
+	install -Dm755 "$_staticdir"/busybox.static \
+		"$subpkgdir"/bin/busybox.static
+}
+
+ssl_client() {
+	pkgdesc="External ssl_client for busybox wget"
+	# Upstream reads the major from `pkg-config --modversion libssl` on the
+	# build host. Here the provider is this tree's own libssl3, whose ABI
+	# digit is in its package name, so the name is written out.
+	install_if="$pkgname=$pkgver-r$pkgrel libssl3"
+
+	install -Dm755 "$_dyndir"/ssl_client \
+		"$subpkgdir"/usr/bin/ssl_client
+}
+
+ifupdown() {
+	pkgdesc="placeholder package for busybox ifupdown"
+	provides="ifupdown-any"
+	provider_priority=200
+	mkdir -p "$subpkgdir"
+}
+
+binsh() {
+	pkgdesc="busybox ash /bin/sh"
+	provides="/bin/sh"
+	provider_priority=100
+
+	install -d "$subpkgdir"/bin
+
+	ln -s /bin/busybox "$subpkgdir"/bin/sh
+}
+
+# Dropped from aports, each for a reason this tree can name:
+#   - busybox-openrc, busybox-mdev-openrc, busybox-extras-openrc, and with
+#     them every *.initd/*.confd source and the acpid-poweroff.sh they
+#     install: all three are pure depends="openrc>=0.24.1-r6" payloads and
+#     there is no openrc package here, and a dependency is not invented
+#     against a nonexistent package.
+#   - replaces="busybox-initscripts", which tracks a move of
+#     default.script between two Alpine packages neither of which exists
+#     here.
+#   - options="net", which upstream carries only so check() can use the
+#     network; check() is off tree-wide.
+#   - check() itself, per options="!check": it runs the binaries it built,
+#     and this build host has no wasm64 loader.
+sha512sums="
+ba3866f0a9ceabafe8c4d43afaf031bc5554742903b3d08e59a8592351dc09c6e091bb0cd2852b3ed1e79e841de871bac4dc48d9bb1cef9309c3f8495aba0d00  busybox-1.38.0.tar.bz2
+3e56f8854b64a32621757492b3c8170ba33b07084f4bbfed2c0921fd474d87925899a5781366a97a289e71ef393458f5c033055d5ff503ac236f958662463de5  0001-ash-exec-busybox.static.patch
+f33ebf9cc7c002bcac9679a1525baad77eff5ba8e7a6ea9e25818de10285ca3fffd268a4f9ae797a016260acd0bf1f79b1d0d38c42ff2c133411ae3ccb9b257e  0002-awk-fix-handling-of-literal-backslashes-in-replaceme.patch
+d837429bd3058fe2d3b09be845787154ccef8f8ffb1347ff338e8a73d5b17dcc5e4d5550fa23a6deb31ae798613a3064f955b84bceec58b1bb9c9f2434f28df6  0003-blkdiscard-ship-link-to-sbin-instead-of-usr-bin.patch
+b0d99e46b350287bb2ca2c8ac0b0cb5e1d7b8070ab67932da3fde32c1219808e599dfe2acf7eee235f1f8fe5d371d66769fb182fdd37b165d889f8c6aa60d796  0004-hexdump-fix-regression-with-n4-e-u.patch
+b23f11208704a9f3535cbee1df7a18d59f1c15fc941a2e4dbbb477bf8123bd02dbb4ca21c3688c3d0eb2cfc6bc9fd509b5035f8c6aa90a8af164ffa7139e99cf  0005-init-add-support-for-separate-reboot-action.patch
+c4e96396e8874899bd301305169902d6f28b9f40623526e048c2c55374a565c500f420e41967263b6501ee479e2b21492e1c89f1c2bab53db85d8412604e0cbd  0006-mount-fix-parsing-proc-mounts-with-long-lines.patch
+35fc444eeed26c3a70c1abbe3b8a7ba0c7f737a5460245314c0be268f0dfcf21bc81fd083ce3bf854f04ee83836279bb53f516214243448224298f18a67a6241  0007-tar-fix-TOCTOU-symlink-race-condition.patch
+b23decc42b67941fb4166f29f28eff6e7a9837e42d3486f575216a55c4782b4209286e3dfadae7ea7a69ec690dcb9ce5dda59691a0e7d4fd71fcf514b6f44f1a  0008-tunctl-fix-segfault-on-ioctl-failure.patch
+4a6a0b065e65210dae1214bf9311efcf4aa0174a7fb28cb0a746aadefd06d52a5e1defb0e2cecc22ea4a5989a5f9cf42baa9cab9f56a000bea67effa771429ed  0009-wget-add-header-Accept.patch
+785d231f28cc476116d633b52dfd49f66ccd0c50fff28e4baaf0fad202504341563f201f33b58c0d55d8394e0ae7c02cb76e92b797815e88b72d18b0b9773611  0010-adduser-default-to-sbin-nologin-as-shell-for-system-.patch
+1f3a18b5fa772b011990a280c023be3b8de67c712424488daaa2ef45f64d2dc61d17b2de8de33263dd118bf018aae4823750375927aa2aa24a758bd8a2a33178  0011-ash-add-built-in-BB_ASH_VERSION-variable.patch
+e285112252dd6b7e20fa324490c989b186fff38731375aff8bcf4b45daca3f4c60bc66c2600b7381df1c3c45036290698bb0ed708eca07e1d792fb676f307f95  0012-Avoid-redefined-warnings-when-buiding-with-utmps.patch
+a3a6b77e5ee76183cae230d3e9b6abc0e23d11b7967f0b4b8146c09e76ae8ef1986abf6dd07bd1050f67b67e08534623589ae25a942255c6b9eeb390ff8829f2  0013-libbb-sockaddr2str-ensure-only-printable-characters-.patch
+d39f55e0b629fa0ef5668d4ba8f1758fd9fb3fec4137102f0e72f4dc69daf30c352ab5751689f478277a4c8704b98b6ed9a9615df187124e945171a6071b8d31  0014-modinfo-add-k-option-for-kernel-version.patch
+b50ae37eba3fe06368fae49a053796156a4e8f1ecc775bf3328d8105fca1ba2ae10246146ce92b44df845b4250660aca3e613177dda8330b7b6621a2a8017362  0015-nologin-Install-applet-to-sbin-instead-of-usr-sbin.patch
+b434b370937768c08c723fe025269f17eecc84780d931718ec43c1064c9068fb99b453062a4532e573f4869db98dcc0a9902580148d3901e3ef629a779cae68f  0016-pgrep-add-support-for-matching-against-UID-and-RUID.patch
+697ece602ed3252a50c7185ed2432059fd1cd777cd280e8b3026ea2f25c303e6833cce1e7db0f075227aeddbc99223b1fa9aab61fb35e0ece44290a397b16553  0017-properly-fix-wget-https-support.patch
+4209527e55975eeadde8328ccb5b0d131e4ae058db375aaaa7614308edc0995561ef3115550ea8b39a7b334de557d5efc811aa0decd80893fe22c71290b1fea0  0018-fsck-resolve-LABEL-.-UUID-.-spec-to-device.patch
+c22f3c8fafdae6bb84e896122cb5ad2c066fe47bcbaf739588467f274b68ba7a4969d1dab76f24fac6e2be2448758847a8fcf8d84ef07f318a2f264e560d6a46  0019-nslookup-sanitize-all-printed-strings-with-printable.patch
+a3813834ab36d080ca4de1bb1f8a59f53951f0cfdcf68684d8eb1b73f6de353170d804207e96d1fc1a8694447ac6a27672baf22132ee0f65485f14b238346040  0020-app-location-for-cpio-vi-and-lspci.patch
+40f199922fd44e1049d65b379aa020d8ded7da2e1c045a582e5931ed2e9c2839ed3acfdfffaee97d0c056dd0fd3a5e0c5840115a99dbb22cf34f2dd108d74a1d  0021-udhcpc-set-default-discover-retries-to-5.patch
+97c8a257d4788399f709a18e7c824f3fd95b8f389b42a91bc757b098264865f91b83639d79444f4d7679cdd5ac58e9f70f7b1bedb8d5934d092ee7fd114664de  0022-ping-make-ping-work-without-root-privileges.patch
+6d8e3c061e6f276cb1054a673c1634ecbeecd5c40a692b39452a8351fdf21e04a07f42c365b8aec44a16cd7d47993c20c6410631f16f014b3cc0dc50d02eed80  0023-fbsplash-support-console-switching.patch
+cee1fd91286b610a2340dc6cb780b4d4868b8c65e28c7447b0881bebd50453b06595c73020b09a9658dc1c1dec13f3b2234f1f3d2e393326b8dbc369eb838955  0024-fbsplash-support-image-and-bar-alignment-and-positio.patch
+618de33cbc2931e302c9edc6e2b2ea619869e3d4928e4a0c1055d58b6143522f77f61e42ab54870191c9b27abe971d5c69dd8636995237196ab0efbe8f599792  0025-depmod-support-generating-kmod-binary-index-files.patch
+14461300e96d4dae6e84d35b95bf8a579c6226de55d724103b9a4b2d844bb187b65920af8c81297a4af442eb6c718ec3e97b8640df1aded9ccb6e5bfa88a0fb8  0026-Add-flag-for-not-following-symlinks-when-recursing.patch
+66493b2b13864879fe74fa717085e50d36d691ac1ef84a6c2f2d77604ec40e420a850ce3bb145b16dcfd7a7a7c81f2ed3eb9534986edf52abe1b6af152ecf940  0027-udhcpc-Don-t-background-if-n-is-given.patch
+00f9ac92ea49ca23b817100234d299bc307e28425292063bf2501fd53f7d67b3c0b441a6f4320a4bda8620cb7c978d67f5f65fc8b9d4fb9cbcdbba640e9f4ac4  0028-tests-fix-tarball-creation.patch
+2265f53109de032cd3e14f15394169a0545e1f22a0e2e6213a4dd1a91f122feb74e0aa887bdaf3347ede5d5c427c85f3f11a6f9efc2a8403d97f291d041b1762  0029-tests-musl-doesn-t-seem-to-recognize-UTC0-as-a-timez.patch
+33f560f8d7bff95b9d1c4db6fb61d786269bc884e6ced2ee740c1ce783d66666a6f61cc7dcba9b7373b17e882a8921c8a0a0eff528d2eb3a5d1170626c05846e  0030-Hackfix-to-disable-HW-acceleration-for-MD5-SHA1-on-x.patch
+cc97840ca1b3f04c253ae9dde543f703841cf982570565f3c2d0ea47346531d99993f6508d0bf1c3f54a60b3730226af77a2142fb47b5ea01c180a13b19afa68  0031-umount-Implement-O-option-to-unmount-by-mount-option.patch
+6d5ad2dad11382cba30e53bfe1be64407e3d7056a49b0ca9ed73117b9de21112753f88600ea93977fbf8b32a22983590e614b566f43a2cacc27fd41e3fb77fa7  0032-find-fix-xdev-depth-and-delete.patch
+076171546f488e59c069ea49512d2851d3401cb9af624139b62432d4218e1ed5fc6d9dbbab6c3273a79965ee8bf09afd5deba1444fda6bd34875596aeedd5150  0033-awk.c-fix-CVE-2023-42366-bug-15874.patch
+788d17e524d95c9f52cc67a3357d457f196cd3a9bf24a45f16a5e1ac9931c878d300aa65d35bf0751367f7540a17e4ced73e9adc683924783e998c0788f4daa6  0034-awk-Mark-test-for-handling-of-start-of-word-pattern-.patch
+bb97a718e4882a6c87a32b63feab352e443c43b958c9f996b1df4e37f71177d5ef9651e096eb4456d395f48d7b3746d4dfd9a8a472d6edc3c6e0c21ac6dd932a  0035-syslogd-fix-wrong-OPT_locallog-flag-detection.patch
+871f38ad67c6a98237687bc8c8f3b2eacafa1e8d8483c9fda9ebe1c0ca33941881c3b991ef7ddfb5c787ea71cea76ee9f978f78109e4f5d6df95c730d5767c20  0036-Fix-CVE-2024-58251-sanitize-process-names-when-calli.patch
+567bf9e57f7c4cc5731d50af7726501f27afe9b56dc3a2793b694e831cc2ebe964dc3b7986dfc1e8bcc6746f6f3adac7f7078a17783a9af80fb27164182eecb9  0037-Skip-additional-hexdump-test-on-big-endian-systems.patch
+91d3575ea87ff93de50c79268753136780b1796b5c6dabc61bfec292f50621a4013513d66ca92390d3205e39f4cacdea8a713ce64168f0bae19559b6bf5e0cda  0038-ash-clear-bb_got_signal-for-non-interactive-shell.patch
+46bcad2d297847cf3c2be3f49b85502bb643fa1aebe4eefd064b2f077da8b990e7a136b8af8a73e8a694fc2e0945849c7fdeb60b76d1b3325a286775a29a355c  0039-Install-lsblk-to-bin-instead-of-usr-bin.patch
+c06c83698e54a62ba9bc4ecedfaf9a7bf4794d870d2c9d5e649e4b190b69bfc8e25fdb35deb2ecd376d8d74b9e62ec3ee8ea9817d8faaeb93c02b6cb7c9643bf  0040-ash-fix-out-of-bounds-read-in-ifsbreakup.patch
+aa93095e20de88730f526c6f463cef711b290b9582cdbd8c1ba2bd290019150cbeaa7007c2e15f0362d5b9315dd63f60511878f0ea05e893f4fdfb4a54af3fb1  acpid.logrotate
+2ea71d5173a75a12d809f573b91ce0e860887c65759ba11571aeed61d0109286c9ba0bea3850f7f42c772cd2e3a6672938dfc46b7a21038ce29445355e9b2792  busyboxconfig
+33dbba1a23ae4f15a1c778f7cdbe2edb1d8ac39d6617ce4d2421237fe87ec2facba7ad45716ffb6ebaf12c99bd6ee216d2ea1be101aa7a973a92dd140baecfa6  busyboxconfig-extras
+0becc2186d6c32fb0c401cf7bc0e46268b38ce8892db33be1daf40273024c1c02d518283f44086a313a2ccef34230a1d945ec148cc173f26e6aa9d88a7426e54  bbsuid.c
+afc27da5f95bec3e3ccb5b1fcb5bd80a8317d8753e6c70cc0750d0875313e44bf2e487472c8499d7bbe5afba3e583c75548ccdcff4dcadc94bb791f53fb77ba3  dad.if-up
+1c7c78afb274d1316725b22585452efd7de9a80ad326f099f25e34d0877c5d81ced579e2dc795314221e316f58071374f61ee22c6ffd34072266525f65d3614c  ssl_client.c
+6a34185447d48537317379181abc703f47f93f6a5399d8dcb33fcb0d9247c8659ef739b011ec9e16052505d9a5e4950d557d7f5a8236f5744be0b206390e9a10  default.script
+5f9ff70f99a970e88460c0de81a6637d8a82252fba6715e259833f16ed8cbfc3440972b1fa454eb77dbbcd1e244774c96b4eef96f71a2b67a9039a0dd5e6fc1e  udhcpc.conf
+38d6ce0dfff65ce7ec644f5d7aca70de943f4d5fb8820c772f5d945926b678de280f19831d3f3d0dc0dcda16812841748b57eaa745b784a5e216a59657afbd71  securetty
+95187d7f4f91a1be353d9c5922238da6ff1f688a1a7366678c10163c683ba7fd82b3fecc71e86e04197aa322322e0152a3cf86b4ceca19dd04e9a9c763fede2f  acpid-poweroff.sh
+"

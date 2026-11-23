@@ -1,0 +1,41 @@
+node_js2c is a host-toolset tool, and its two library dependencies are gated
+on the bundled build of each: --shared-libuv is not passed here (aports keeps
+node's bundled libuv too), but --shared-simdutf is, so js2c loses simdutf.h
+and never gets uv.h -- neither library is installed in the build image.
+libuv#host is therefore made unconditional and builds from the tarball with
+the host compiler. simdutf cannot follow it: naming tools/v8_gypfiles/v8.gyp
+drags the whole V8 gyp file back into a graph that --without-bundled-v8 has
+removed, and gyp then emits two rules generating js_protocol.stamp. Its
+single translation unit is compiled into node_js2c directly instead.
+
+--- a/node.gyp
++++ b/node.gyp
+@@ -1509,12 +1509,15 @@
+       'target_name': 'node_js2c',
+       'type': 'executable',
+       'toolsets': ['host'],
++      'dependencies': [ 'deps/uv/uv.gyp:libuv#host' ],
+       'include_dirs': [
+         'tools',
+         'src',
++        'deps/v8/third_party/simdutf',
+       ],
+       'sources': [
+         'tools/js2c.cc',
++        'deps/v8/third_party/simdutf/simdutf.cpp',
+         'tools/executable_wrapper.h',
+         'src/embedded_data.h',
+         'src/embedded_data.cc',
+@@ -1522,12 +1525,6 @@
+         'src/builtin_info.cc',
+       ],
+       'conditions': [
+-        [ 'node_shared_simdutf=="false"', {
+-          'dependencies': [ 'tools/v8_gypfiles/v8.gyp:simdutf#host' ],
+-        }],
+-        [ 'node_shared_libuv=="false"', {
+-          'dependencies': [ 'deps/uv/uv.gyp:libuv#host' ],
+-        }],
+         [ 'OS in "linux mac openharmony"', {
+           'defines': ['NODE_JS2C_USE_STRING_LITERALS'],
+         }],

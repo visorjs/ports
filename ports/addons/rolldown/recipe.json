@@ -1,0 +1,28 @@
+{
+  "project": "rolldown",
+  "package": "rolldown",
+  "description": "vite's bundler. The npm tarball ships no Rust source, so the git route takes the tagged tree and cross-checks it against the release's own npm provenance attestation (the packument carries no gitHead). One cdylib, rolldown_binding, standing in for @rolldown/binding-linux-x64-{gnu,musl}. Versions: npm 0.1.0-0.3.0 (2017-2019) are an unrelated earlier package with no binding and no optionalDependencies (min 0.9.1, the first rolldown release with bindings). 0.9.1 and 0.9.2 have no v<version> tag upstream, and 0.10.0 publishes no provenance attestation, so the git route with attestation provenance refuses them; those are denied. Profile: upstream's wasm build is the release-wasi profile (opt-level s over release) with panic=abort from its wasm32 target, and napi's post-link drops the name section as the release profile's strip=symbols does; opt-level z, not s, because instrumented 1.2.11 measured 21.5 MB at z against 26.5 MB at s.",
+  "source": {
+    "route": "git",
+    "url": "https://github.com/rolldown/rolldown.git",
+    "tag": "v{version}",
+    "provenance": "attestation"
+  },
+  "build": {
+    "kind": "cargo",
+    "manifestPath": "crates/rolldown_binding/Cargo.toml",
+    "args": ["--lib"],
+    "profile": {
+      "opt-level": "z",
+      "panic": "abort"
+    },
+    "output": "target/wasm64-visorjs-linux-musl/release/librolldown_binding.so"
+  },
+  "upstream": {
+    "platformPackages": ["@rolldown/binding-linux-x64-{libc}"]
+  },
+  "versions": {
+    "min": "0.9.1",
+    "deny": ["0.9.1", "0.9.2", "0.10.0"]
+  }
+}

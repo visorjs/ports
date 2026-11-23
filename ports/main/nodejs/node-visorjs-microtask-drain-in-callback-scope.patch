@@ -1,0 +1,160 @@
+Move the microtask drain out of processTicksAndRejections and into the C++
+callback scope that calls it.
+
+node's tick loop is JS: processTicksAndRejections drains the tick queue, calls
+runMicrotasks(), and repeats while ticks remain. On the host JS-engine arm the
+microtask checkpoint is one of the two sites where the worker task the guest
+occupies can end so the host engine gets a task of its own (the other is
+libuv's poll) -- and it cannot end there, because a frame of
+processTicksAndRejections is on the stack. Unwinding past a JS frame would
+discard a continuation the rewind replay cannot rebuild, so the backend
+refuses the turn and finalizers never arrive after a callback.
+
+So the drain happens one frame lower. processTicksAndRejections becomes one
+pass over the tick queue; processTicksAgain() is the test that used to be the
+loop's condition, asked after the drain (a microtask can enqueue a tick, which
+is why it could not move ahead of it) and clearing the two tick flags on its
+last answer; and InternalCallbackScope::Close runs the alternation: a pass,
+the checkpoint, the test, repeat. The sequence a program observes is
+unchanged -- ticks, then microtasks, repeat while ticks remain, then the flags
+cleared -- and it is still processTicksAndRejections that runs the ticks.
+
+runNextTicks(), which timers call from JS, keeps a JS-side loop over the same
+two functions: it has a JS frame either way, so it was never a yield-legal
+site and nothing is gained by moving it.
+
+The second function is registered through setTickCallback's existing binding
+rather than a new one, so the two can never be set apart; env_properties.h
+gains the one field that holds it.
+
+The patch is arm-neutral: it moves where the drain is called from, not what
+is called, and the mozjs arm runs the same sequence it always did.
+
+--- a/lib/internal/process/task_queues.js
++++ b/lib/internal/process/task_queues.js
+@@ -66,12 +66,25 @@
+   if (!hasTickScheduled() && !hasRejectionToWarn())
+     return;
+ 
+-  processTicksAndRejections();
++  // The C++ callback scope drives this alternation when it reaches the
++  // checkpoint with no JS frame on the stack; here there is one either way,
++  // so the same sequence is spelled out.
++  do {
++    processTicksAndRejections();
++    runMicrotasks();
++  } while (processTicksAgain());
+ }
+ 
++// One pass over the tick queue. The microtask drain that used to close each
++// pass, and the test that asks for another, are processTicksAgain() and the
++// loop in InternalCallbackScope::Close: the drain has to happen with no JS
++// frame on the stack for the host-turn yield to be legal there, and a frame
++// of this function is what it used to happen under. Order is unchanged --
++// ticks, then microtasks, repeat while ticks remain -- and it is still this
++// function that runs the ticks.
+ function processTicksAndRejections() {
+   let tock;
+-  do {
++  {
+     while ((tock = queue.shift()) !== null) {
+       const priorContextFrame =
+         AsyncContextFrame.exchange(tock[async_context_frame]);
+@@ -101,11 +114,21 @@
+ 
+       AsyncContextFrame.set(priorContextFrame);
+     }
+-    runMicrotasks();
+-  } while (!queue.isEmpty() ||
+-           (hasRejectionToWarn() && processPromiseRejections()));
++  }
++}
++
++// Asked after the microtask drain, never before it: a microtask can enqueue
++// a tick, which is why the test could not move ahead of the drain. True while
++// another pass is owed; on the last one it clears the two flags the loop used
++// to clear on its way out.
++function processTicksAgain() {
++  if (!queue.isEmpty() ||
++      (hasRejectionToWarn() && processPromiseRejections())) {
++    return true;
++  }
+   setHasTickScheduled(false);
+   setHasRejectionToWarn(false);
++  return false;
+ }
+ 
+ // `nextTick()` will not enqueue any callback when the process is about to
+@@ -179,7 +202,7 @@
+     // Sets the per-isolate promise rejection callback
+     listenForRejections();
+     // Sets the callback to be run in every tick.
+-    setTickCallback(processTicksAndRejections);
++    setTickCallback(processTicksAndRejections, processTicksAgain);
+     return {
+       nextTick,
+       runNextTicks,
+--- a/src/api/callback.cc
++++ b/src/api/callback.cc
+@@ -178,13 +178,34 @@
+   if (!env_->can_call_into_js()) return;
+ 
+   Local<Function> tick_callback = env_->tick_callback_function();
++  Local<Function> tick_again = env_->tick_again_function();
+ 
+   // The tick is triggered before JS land calls SetTickCallback
+   // to initializes the tick callback during bootstrap.
+   CHECK(!tick_callback.IsEmpty());
++  CHECK(!tick_again.IsEmpty());
+ 
+-  if (tick_callback->Call(context, process, 0, nullptr).IsEmpty()) {
+-    failed_ = true;
++  // The tick loop, moved down one frame out of processTicksAndRejections:
++  // one pass over the tick queue, then the microtask drain, then the test for
++  // another pass, exactly the sequence the JS loop ran -- no check between
++  // the pass and the drain, because the JS loop had none and one there would
++  // leave both tick flags set when a pass sets stopping. What changes is
++  // where the drain happens: here there is no JS frame on the stack, which
++  // is what makes the checkpoint a site the host-turn yield may unwind from.
++  // A termination reaches the loop the way it reached the JS one, as an
++  // empty return from a Call.
++  for (;;) {
++    if (tick_callback->Call(context, process, 0, nullptr).IsEmpty()) {
++      failed_ = true;
++      break;
++    }
++    context->GetMicrotaskQueue()->PerformCheckpoint(isolate);
++    Local<Value> again;
++    if (!tick_again->Call(context, process, 0, nullptr).ToLocal(&again)) {
++      failed_ = true;
++      break;
++    }
++    if (!again->IsTrue()) break;
+   }
+   perform_stopping_check();
+ }
+--- a/src/node_task_queue.cc
++++ b/src/node_task_queue.cc
+@@ -145,7 +145,12 @@
+ static void SetTickCallback(const FunctionCallbackInfo<Value>& args) {
+   Environment* env = Environment::GetCurrent(args);
+   CHECK(args[0]->IsFunction());
++  // The second half of the tick loop, which InternalCallbackScope::Close now
++  // drives: one pass, then the microtask drain, then this. Registered in the
++  // same call so the two can never be set apart.
++  CHECK(args[1]->IsFunction());
+   env->set_tick_callback_function(args[0].As<Function>());
++  env->set_tick_again_function(args[1].As<Function>());
+ }
+ 
+ static void SetPromiseRejectCallback(
+--- a/src/env_properties.h
++++ b/src/env_properties.h
+@@ -515,7 +515,8 @@
+   V(snapshot_deserialize_main, v8::Function)                                   \
+   V(source_map_cache_getter, v8::Function)                                     \
+   V(tick_callback_function, v8::Function)                                      \
++  V(tick_again_function, v8::Function)                                         \
+   V(timers_callback_function, v8::Function)                                    \
+   V(tls_wrap_constructor_function, v8::Function)                               \
+   V(trace_category_state_function, v8::Function)                               \

@@ -1,0 +1,157 @@
+# Maintainer: visorjs <info@visorjs.com>
+pkgname=readline
+pkgver=8.3.3
+pkgrel=8
+_myver=${pkgver%.*}
+pkgdesc="GNU readline library"
+url="https://tiswww.cwru.edu/php/chet/readline/rltop.html"
+arch="wasm64"
+options="!check !strip !archcheck"
+license="GPL-3.0-or-later"
+depends="musl>=1.2.6-r28 libncursesw"
+# aports relies on tracedeps to pull the runtime libs a -dev install needs;
+# the self-deps are spelled out here so the libreadline.so / libhistory.so
+# symlinks never dangle. aports' makedepends_host is
+# dropped for the same reason every recipe here drops it: build.sh installs
+# only $makedepends, and _stage_deps below supplies the host root instead.
+depends_dev="$pkgname=$pkgver-r$pkgrel libhistory=$pkgver-r$pkgrel ncurses-dev"
+subpackages="
+	$pkgname-static
+	$pkgname-dev
+	$pkgname-doc
+	libhistory
+	"
+source="https://ftp.gnu.org/gnu/readline/readline-$_myver.tar.gz
+	fix-ncurses-underlinking.patch
+	inputrc
+	"
+patch_args="-p0"
+
+_i=1
+while [ $_i -le ${pkgver##*.} ]; do # patchlevel used by upstream patches
+	_patch=$(printf "%03d" $_i)
+	_name=$pkgname${_myver//./}-$_patch
+	source="$source
+		$_name.patch::https://ftp.gnu.org/gnu/readline/readline-$_myver-patches/$_name"
+	_i=$((_i+1))
+done
+
+builddir="$srcdir/$pkgname-$_myver"
+
+_stage_deps() {
+	local deps="$srcdir/deps-staged"
+	apk add --root "$deps" --initdb --no-scripts --no-chown \
+		--arch "$CARCH" --keys-dir "${VISORJS_APK_KEYS:-/work/ports/keys}" \
+		--repository "$REPODEST/main" \
+		musl ncurses-dev libncursesw \
+		|| die "staging the dependency root failed"
+
+	# No pkg-config here: readline resolves termcap via bash_cv_termcap_lib.
+	export CFLAGS="$CFLAGS -I$deps/usr/include"
+	export CPPFLAGS="$CPPFLAGS -I$deps/usr/include"
+	export LDFLAGS="$LDFLAGS -L$deps/usr/lib"
+}
+
+build() {
+	_stage_deps
+
+	# wasm-ld rejects autoconf's `char f (void);` function probes on
+	# signature mismatch; cache variables supply the true answers.
+	./configure \
+		--build=$CBUILD \
+		--host=$CARCH-alpine-linux-musl \
+		--prefix=/usr \
+		--mandir=/usr/share/man \
+		--infodir=/usr/share/info \
+		--enable-static \
+		--enable-shared \
+		bash_cv_termcap_lib=ncursesw \
+		ac_cv_lib_ncursesw_tgetent=yes \
+		ac_cv_func_chown_works=yes \
+		ac_cv_func_fcntl=yes \
+		ac_cv_func_fnmatch=yes \
+		ac_cv_func_getpwent=yes \
+		ac_cv_func_getpwnam=yes \
+		ac_cv_func_getpwuid=yes \
+		ac_cv_func_gettimeofday=yes \
+		ac_cv_func_isascii=yes \
+		ac_cv_func_iswctype=yes \
+		ac_cv_func_iswlower=yes \
+		ac_cv_func_iswupper=yes \
+		ac_cv_func_isxdigit=yes \
+		ac_cv_func_kill=yes \
+		ac_cv_func_lstat=yes \
+		ac_cv_func_mbrlen=yes \
+		ac_cv_func_mbrtowc=yes \
+		ac_cv_func_mbscasecmp=yes \
+		ac_cv_func_mbschr=yes \
+		ac_cv_func_mbscmp=yes \
+		ac_cv_func_mbsncmp=yes \
+		ac_cv_func_mbsnrtowcs=yes \
+		ac_cv_func_mbsrtowcs=yes \
+		ac_cv_func_memmove=yes \
+		ac_cv_func_pselect=yes \
+		ac_cv_func_putenv=yes \
+		ac_cv_func_readlink=yes \
+		ac_cv_func_select=yes \
+		ac_cv_func_setenv=yes \
+		ac_cv_func_setitimer=yes \
+		ac_cv_func_setlocale=yes \
+		ac_cv_func_strcasecmp=yes \
+		ac_cv_func_strcoll_works=yes \
+		ac_cv_func_strpbrk=yes \
+		ac_cv_func_sysconf=yes \
+		ac_cv_func_tcgetattr=yes \
+		ac_cv_func_tcgetwinsize=yes \
+		ac_cv_func_tcsetwinsize=yes \
+		ac_cv_func_tgetent=yes \
+		ac_cv_func_towlower=yes \
+		ac_cv_func_towupper=yes \
+		ac_cv_func_vsnprintf=yes \
+		ac_cv_func_wcrtomb=yes \
+		ac_cv_func_wcscoll=yes \
+		ac_cv_func_wcsdup=yes \
+		ac_cv_func_wcsnrtombs=yes \
+		ac_cv_func_wcswidth=yes \
+		ac_cv_func_wctype=yes \
+		ac_cv_func_wcwidth=yes \
+		bash_cv_func_sigsetjmp=present \
+		bash_cv_must_reinstall_sighandlers=no \
+		bash_cv_wcwidth_broken=no
+	make
+}
+
+package() {
+	make DESTDIR="$pkgdir" install
+
+	# aports strips the rpath with chrpath here; wasm shared objects are
+	# not ELF, so there is no rpath to strip and chrpath is not run.
+
+	# Verify readline is not underlinked, as aports does. Its readelf -d
+	# check cannot read wasm, so grep the dylink NEEDED list instead —
+	# fix-ncurses-underlinking.patch exists solely to make this hold.
+	if ! grep -q libncursesw.so.6 "$pkgdir"/usr/lib/libreadline.so.8.3; then
+		die "readline needs to be linked against ncurses"
+	fi
+
+	# Empty on linux*: shlib-install only populates bindir on Cygwin.
+	# rmdir, not rm -rf, so this fails loudly if upstream ever changes.
+	rmdir "$pkgdir"/usr/bin
+	install -Dm644 "$srcdir"/inputrc "$pkgdir"/etc/inputrc
+}
+
+libhistory() {
+	pkgdesc="GNU History Library"
+	depends="musl>=1.2.6-r28 libncursesw"
+
+	amove usr/lib/libhistory.so.*
+}
+
+sha512sums="
+513002753dcf5db9213dbbb61d51217245f6a40d33b1dd45238e8062dfa8eef0c890b87a5548e11db959e842724fb572c4d3d7fb433773762a63c30efe808344  readline-8.3.tar.gz
+3fa096385feee5f6c01866ef220a92ba646dcebf59c6bba701bc5a3d234df899c37c8f7954b900aa2738c70697b7444da2c9b76dc64ba33c68dec02ac2244371  fix-ncurses-underlinking.patch
+5dbe872e94166aaed7ca2edec5a34ef9b13b254381e252cc6d851877b461579903cbb5b5dc588eabececcf1ebe636f6cb4da406cd01b64757f8c7e7f62e9a276  inputrc
+ced50af353ed527f6ec0eac5f65261f2ed208825ec72fe2acf5f0217f34f84f33dcbf01b895325f6b33664b5a426bac99506193e2ddb6eea8c79ccad37364b89  readline83-001.patch
+e45ad6443bd4e271ec8e8ab883de561b6420aec362b0b7f0256086cb5a023d946df55994ed99c76ceb191e8a25e8059ae9b553ef1d546626d671b80af292f04d  readline83-002.patch
+6b3ebffe994d0cd4d3466b15e3aee9a73613109283a4442f3bf10e28edcd1204df824c71356d66d01ac21014a806023a101fedf94526a19f6f590d9ffdc864cd  readline83-003.patch
+"

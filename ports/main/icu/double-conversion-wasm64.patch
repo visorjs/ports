@@ -1,0 +1,15 @@
+wasm64 has the same IEEE-754 binary64 semantics as wasm32, which the
+vendored double-conversion already lists as correct; it only tests the
+32-bit predefine, so a 64-bit wasm target hits the #error instead.
+
+--- a/i18n/double-conversion-utils.h
++++ b/i18n/double-conversion-utils.h
+@@ -160,7 +160,7 @@
+     defined(__riscv) || defined(__e2k__) || \
+     defined(__or1k__) || defined(__arc__) || defined(__ARC64__) || \
+     defined(__microblaze__) || defined(__XTENSA__) || \
+-    defined(__EMSCRIPTEN__) || defined(__wasm32__)
++    defined(__EMSCRIPTEN__) || defined(__wasm32__) || defined(__wasm64__)
+ #define DOUBLE_CONVERSION_CORRECT_DOUBLE_OPERATIONS 1
+ #elif defined(__mc68000__) || \
+     defined(__pnacl__) || defined(__native_client__)

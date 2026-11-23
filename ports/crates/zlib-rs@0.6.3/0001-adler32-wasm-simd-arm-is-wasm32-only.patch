@@ -1,0 +1,31 @@
+The adler32 wasm SIMD arm is compiled for wasm32 only, like every other
+wasm SIMD arm in the crate.
+
+adler32.rs compiles its `wasm` module for wasm32 and wasm64, and that
+module imports `core::arch::wasm64`, which is unstable on every wasm64
+target (`simd_wasm64`), so the crate does not build for one on a stable
+compiler. The arm is also unreachable there: `is_enabled_simd128()` returns
+false for anything but wasm32, and compare256 and slide_hash already gate
+their wasm arms on wasm32 alone. wasm64 takes the scalar adler32, as it did
+at run time before; no other target moves.
+
+--- a/src/adler32.rs
++++ b/src/adler32.rs
+@@ -11,7 +11,7 @@
+ mod generic;
+ #[cfg(target_arch = "aarch64")]
+ mod neon;
+-#[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
++#[cfg(target_arch = "wasm32")]
+ mod wasm;
+ 
+ pub fn adler32(start_checksum: u32, data: &[u8]) -> u32 {
+@@ -31,7 +31,7 @@
+         return self::neon::adler32_neon(start_checksum, data);
+     }
+ 
+-    #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
++    #[cfg(target_arch = "wasm32")]
+     if crate::cpu_features::is_enabled_simd128() {
+         return self::wasm::adler32_wasm(start_checksum, data);
+     }

@@ -1,0 +1,180 @@
+# Maintainer: visorjs <info@visorjs.com>
+pkgname=expat
+pkgver=2.8.2
+_tagver=R_${pkgver//./_}
+pkgrel=8
+pkgdesc="XML Parser library written in C"
+url="https://libexpat.github.io/"
+arch="wasm64"
+license="MIT"
+# aports has checkdepends="bash" for its check(); options="!check" is
+# tree-wide here (the aarch64 build container cannot execute a wasm64
+# binary), so the test dependency has nothing to serve and is dropped.
+# aports relies on tracedeps to attribute libexpat.so.1 to a package;
+# xmlwf's runtime libraries are spelled out here as well, with the musl
+# floor tracedeps cannot add.
+depends="musl>=1.2.6-r28 libexpat"
+options="!check !strip !archcheck"
+source="https://github.com/libexpat/libexpat/releases/download/$_tagver/expat-$pkgver.tar.xz"
+# pull in xmlwf for dev
+depends_dev="$pkgname=$pkgver-r$pkgrel"
+# Order matters, ensure -dev does not gobble up static libraries.
+subpackages="$pkgname-static $pkgname-dev $pkgname-doc lib$pkgname:libs"
+
+# secfixes:
+#   2.8.2-r0:
+#     - CVE-2026-50219
+#     - CVE-2026-56131
+#     - CVE-2026-56132
+#     - CVE-2026-56403
+#     - CVE-2026-56404
+#     - CVE-2026-56405
+#     - CVE-2026-56406
+#     - CVE-2026-56407
+#     - CVE-2026-56408
+#     - CVE-2026-56409
+#     - CVE-2026-56410
+#     - CVE-2026-56411
+#     - CVE-2026-56412
+#   2.8.1-r0:
+#     - CVE-2026-45186
+#   2.8.0-r0:
+#     - CVE-2026-41080
+#   2.7.5-r0:
+#     - CVE-2026-32776
+#     - CVE-2026-32777
+#     - CVE-2026-32778
+#   2.7.4-r0:
+#     - CVE-2026-24515
+#     - CVE-2026-25210
+#   2.7.2-r0:
+#     - CVE-2025-59375
+#   2.7.0-r0:
+#     - CVE-2024-8176
+#   2.6.4-r0:
+#     - CVE-2024-50602
+#   2.6.3-r0:
+#     - CVE-2024-45490
+#     - CVE-2024-45491
+#     - CVE-2024-45492
+#   2.6.2-r0:
+#     - CVE-2024-28757
+#   2.6.0-r0:
+#     - CVE-2023-52425
+#     - CVE-2023-52426
+#   2.5.0-r0:
+#     - CVE-2022-43680
+#   2.4.9-r0:
+#     - CVE-2022-40674
+#   2.4.5-r0:
+#     - CVE-2022-25235
+#     - CVE-2022-25236
+#     - CVE-2022-25313
+#     - CVE-2022-25314
+#     - CVE-2022-25315
+#   2.4.4-r0:
+#     - CVE-2022-23852
+#     - CVE-2022-23990
+#   2.4.3-r0:
+#     - CVE-2021-45960
+#     - CVE-2021-46143
+#     - CVE-2022-22822
+#     - CVE-2022-22823
+#     - CVE-2022-22824
+#     - CVE-2022-22825
+#     - CVE-2022-22826
+#     - CVE-2022-22827
+#   2.2.7-r1:
+#     - CVE-2019-15903
+#   2.2.7-r0:
+#     - CVE-2018-20843
+#   2.2.0-r1:
+#     - CVE-2017-9233
+
+# lib/Makefile.am links with -version-info LIBCURRENT:LIBREVISION:LIBAGE,
+# which configure.ac sets to 13:2:12. libtool's spelling of that is soname
+# libexpat.so.(13-12) with real file libexpat.so.(13-12).12.2, and
+# reactor-link stamps the same soname below.
+_sover=1
+_solib="libexpat.so.$_sover.12.2"
+
+build() {
+	# aports passes --host=$CHOST; abuild has no wasm64 entry in its
+	# arch-to-host-spec table, so the triple is spelled out, as every
+	# recipe in this tree does.
+	#
+	# --disable-shared is a wasm64 divergence. libtool decides at
+	# configure time how to produce a shared object by probing $LD,
+	# which here is reactor-link — not a GNU ld and not a platform
+	# libtool has a case for; libunistring's recipe hit the same wall.
+	# So libtool builds only the archive and the shared object is
+	# linked from it by reactor-link below, which is what stamps the
+	# soname.
+	#
+	# --without-tests is a wasm64 divergence: the test programs exist
+	# only to be run by check(), which options="!check" turns off
+	# tree-wide, and enabling them additionally makes
+	# AX_CXX_COMPILE_STDCXX_11 mandatory for a C++ toolchain nothing
+	# installed would use.
+	#
+	# ac_cv_func_mmap_fixed_mapped answers AC_FUNC_MMAP, which decides
+	# by *running* an mmap program and so cannot run here. Answered no
+	# — also autoconf's own cross-compilation default — which selects
+	# xmlwf's readfilemap.c over unixfilemap.c.
+	#
+	# No other cache variables are needed. Expat's remaining link
+	# probes (arc4random, arc4random_buf, getentropy, getrandom,
+	# syscall SYS_getrandom) are AC_LINK_IFELSE bodies with the real
+	# prototypes from <stdlib.h>/<unistd.h>/<sys/random.h> rather than
+	# autoconf's `char f (void);` shape, so wasm-ld has no signature
+	# mismatch to reject, and all five symbols are defined in this
+	# platform's libc — the probes answer correctly on their own.
+	./configure \
+		--build=$CBUILD \
+		--host=$CARCH-alpine-linux-musl \
+		--prefix=/usr \
+		--mandir=/usr/share/man \
+		--enable-static \
+		--disable-shared \
+		--without-tests \
+		ac_cv_func_mmap_fixed_mapped=no
+	make
+
+	$LD --entry-shape=shared --soname "libexpat.so.$_sover" \
+		-Wl,--whole-archive lib/.libs/libexpat.a -Wl,--no-whole-archive \
+		"$REACTOR_SYSROOT/lib/libc.so" \
+		-o "lib/.libs/$_solib"
+	ln -sf "$_solib" "lib/.libs/libexpat.so.$_sover"
+	ln -sf "$_solib" lib/.libs/libexpat.so
+
+	# make linked xmlwf against the archive, the only library libtool
+	# was allowed to build. Relink it against the shared object so the
+	# installed program matches aports', which carries no copy of the
+	# parser of its own.
+	$CC xmlwf/xmlwf-*.o \
+		"lib/.libs/$_solib" \
+		"$REACTOR_SYSROOT/lib/libc.so" \
+		-o xmlwf/xmlwf
+}
+
+package() {
+	make DESTDIR="$pkgdir/" install
+
+	# make install knows only about the archive (see build()); lay down
+	# the shared object and the two symlinks libtool's install would
+	# have produced, at aports' paths.
+	install -D -m755 "lib/.libs/$_solib" "$pkgdir/usr/lib/$_solib"
+	ln -s "$_solib" "$pkgdir/usr/lib/libexpat.so.$_sover"
+	ln -s "$_solib" "$pkgdir/usr/lib/libexpat.so"
+}
+
+libs() {
+	pkgdesc="$pkgdesc (libraries)"
+	depends="musl>=1.2.6-r28"
+
+	amove usr/lib/libexpat.so.*
+}
+
+sha512sums="
+68ee856b3eeefeb6bb800004951bbbe89a9a144354ae12bc9d670888fd89e8513243e0053c61674430c78e2beeeb85a3c86ac7644576a5bb9867fbce3643ff8d  expat-2.8.2.tar.xz
+"

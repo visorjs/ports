@@ -1,0 +1,24 @@
+configure.py puts the --shared-* -l list in target_defaults, which gyp merges
+into every target of both toolsets, so the host tool node_js2c links against
+the target's libraries and fails 16 times over with `ld: cannot find -lz`.
+Scoped to the target toolset instead. It has to be a target_conditions entry:
+plain conditions in target_defaults are evaluated at build-file scope, where
+_toolset does not exist yet, while target_conditions are evaluated per target
+after the merge.
+
+--- a/configure.py
++++ b/configure.py
+@@ -2554,6 +2554,13 @@
+ else:
+   make_global_settings = False
+ 
++# The --shared-* link list belongs to the target toolset only; host tools
++# link against the build machine's libraries.
++if output['libraries']:
++  output.setdefault('target_conditions', []).append(
++    ['_toolset=="target"', { 'libraries': output['libraries'] }])
++  output['libraries'] = []
++
+ # Add configurations to target defaults
+ output['configurations'] = configurations
+ 

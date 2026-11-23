@@ -1,0 +1,17 @@
+# wasm call_indirect traps on signature mismatch: the !HAVE_INSPECTOR stub Initialize() is 0-arg but invoked through addon_context_register_func (4-arg); give it the real signature.
+diff --git a/src/node.cc b/src/node.cc
+index 31439d0cc11..57c04a0ea3e 100644
+--- a/src/node.cc
++++ b/src/node.cc
+@@ -1590,7 +1590,10 @@ int Stop(Environment* env, StopFlags::Flags flags) {
+ }  // namespace node
+ 
+ #if !HAVE_INSPECTOR
+-void Initialize() {}
++void Initialize(v8::Local<v8::Object> target,
++                v8::Local<v8::Value> unused,
++                v8::Local<v8::Context> context,
++                void* priv) {}
+ 
+ NODE_BINDING_CONTEXT_AWARE_INTERNAL(inspector, Initialize)
+ #endif  // !HAVE_INSPECTOR

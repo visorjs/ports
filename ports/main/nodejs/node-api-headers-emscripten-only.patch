@@ -1,0 +1,38 @@
+Upstream's __wasm__ branches describe emnapi: node-api imported from a "napi"
+module and an addon entry renamed napi_register_wasm_v1. Here node itself is
+the wasm64 executable that dlopens the addon, so an addon binds node-api from
+env by its Linux name and exports napi_register_module_v1, which node's
+DLOpen (compiled from the same header) looks up. The branches stay for
+emscripten, their upstream purpose.
+
+--- a/src/js_native_api.h
++++ b/src/js_native_api.h
+@@ -12,7 +12,7 @@
+ #ifndef NAPI_EXTERN
+ #ifdef _WIN32
+ #define NAPI_EXTERN __declspec(dllexport)
+-#elif defined(__wasm__)
++#elif defined(__EMSCRIPTEN__)
+ #define NAPI_EXTERN                                                            \
+   __attribute__((visibility("default")))                                       \
+   __attribute__((__import_module__("napi")))
+--- a/src/node_api.h
++++ b/src/node_api.h
+@@ -5,7 +5,7 @@
+ #ifdef _WIN32
+ // Building native addon against node
+ #define NAPI_EXTERN __declspec(dllimport)
+-#elif defined(__wasm__)
++#elif defined(__EMSCRIPTEN__)
+ #define NAPI_EXTERN __attribute__((__import_module__("napi")))
+ #endif
+ #endif
+@@ -50,7 +50,7 @@
+   NAPI_MODULE_INITIALIZER_X_HELPER(base, version)
+ #define NAPI_MODULE_INITIALIZER_X_HELPER(base, version) base##version
+ 
+-#ifdef __wasm__
++#ifdef __EMSCRIPTEN__
+ #define NAPI_MODULE_INITIALIZER_BASE napi_register_wasm_v
+ #else
+ #define NAPI_MODULE_INITIALIZER_BASE napi_register_module_v

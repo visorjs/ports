@@ -1,0 +1,24 @@
+An extension module leaves the backend's symbols undefined; they bind to
+the postgres executable at load. Name postgres as the link's import
+provider on wasm64 (reactor-link --import-provider), so the module link
+judges those imports against postgres's exports instead of waiving every
+unresolved import, as darwin links modules with -bundle_loader postgres.
+
+--- a/meson.build
++++ b/meson.build
+@@ -173,6 +173,15 @@
+ # the relevant object on the platform.
+ mod_link_args_fmt = []
+ 
++# wasm64: an extension's undefined symbols bind to the postgres executable
++# when it is loaded, so the link names postgres as their provider, as
++# darwin's -bundle_loader does; anything postgres does not export fails it.
++if host_cpu == 'wasm64'
++  mod_link_args_fmt = ['--import-provider=@0@']
++  mod_link_with_dir = 'bindir'
++  mod_link_with_name = '@0@'
++endif
++
+ memset_loop_limit = 1024
+ 
+ # Choice of shared memory and semaphore implementation

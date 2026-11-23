@@ -1,0 +1,28 @@
+An addon built against this node is a wasm64 side module that binds its
+napi_*, uv_*, v8:: and node:: imports to the node executable that dlopens it,
+so its link names that executable as the import provider. It also compiles
+with -D__linux__, as node does: uv.h picks uv_loop_t's layout from it, and the
+SDK compiler does not define it. The branch keys on target_arch alone, in
+target_defaults' OS-independent conditions. node's own build configures
+--dest-cpu=x64 and never reaches it. A gyp shared_library (not an addon's
+loadable_module) links with --allow-unresolved, ld -shared's default: a name
+another dlopen'd module provides reads as a warning.
+
+--- a/common.gypi
++++ b/common.gypi
+@@ -448,6 +448,15 @@
+       [ 'target_arch=="arm64"', {
+         'msvs_configuration_platform': 'arm64',
+       }],
++      [ 'target_arch=="wasm64"', {
++        # An addon builds as Linux and links against the node that dlopens it.
++        'defines': [ '__linux__' ],
++        'ldflags': [ '--import-provider=<(node_root_dir)/bin/node' ],
++        # A shared_library leaves undefined names to dlopen, as ld -shared.
++        'target_conditions': [
++          ['_type=="shared_library"', { 'ldflags': [ '--allow-unresolved' ] }],
++        ],
++      }],
+       ['asan == 1 and OS != "mac" and OS != "zos"', {
+         'cflags+': [
+           '-fno-omit-frame-pointer',

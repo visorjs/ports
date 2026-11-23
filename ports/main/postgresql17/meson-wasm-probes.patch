@@ -1,0 +1,103 @@
+diff --git a/meson.build b/meson.build
+index 42a4d25..b5857e9 100644
+--- a/meson.build
++++ b/meson.build
+@@ -167,7 +167,7 @@ library_path_var = 'LD_LIBRARY_PATH'
+ # the compiler. For export_fmt @0@ is the path to the file export file.
+ export_file_format = 'gnu'
+ export_file_suffix = 'list'
+-export_fmt = '-Wl,--version-script=@0@'
++export_fmt = (host_cpu == 'wasm64') ? '' : '-Wl,--version-script=@0@'
+ 
+ # Flags to add when linking a postgres extension, @0@ is path to
+ # the relevant object on the platform.
+@@ -1237,7 +1237,12 @@ Use -Dreadline=disabled to disable readline support.'''.format(readline_dep))
+ 
+     foreach func : check_funcs
+       found = cc.has_function(func, dependencies: [readline],
+-        args: test_c_args, include_directories: postgres_inc)
++        args: test_c_args, include_directories: postgres_inc,
++        prefix: '''
++          #include <stdio.h>
++          #include <readline/readline.h>
++          #include <readline/history.h>
++        ''')
+       cdata.set('HAVE_' + func.to_upper(), found ? 1 : false)
+     endforeach
+ 
+@@ -1408,7 +1413,16 @@ if sslopt in ['auto', 'openssl']
+     are_openssl_funcs_complete = true
+     foreach c : check_funcs
+       func = c.get(0)
+-      val = cc.has_function(func, args: test_c_args, dependencies: ssl_int)
++      val = cc.has_function(func, args: test_c_args, dependencies: ssl_int,
++        prefix: '''
++          #include <openssl/ssl.h>
++          #include <openssl/crypto.h>
++          #include <openssl/err.h>
++          #include <openssl/bio.h>
++          #include <openssl/asn1.h>
++          #include <openssl/hmac.h>
++          #include <openssl/x509.h>
++        ''')
+       required = c.get(1, {}).get('required', false)
+       if required and not val
+         are_openssl_funcs_complete = false
+@@ -2736,6 +2750,30 @@ func_checks = [
+   ['wcstombs_l'],
+ ]
+ 
++default_func_prefix = '''
++  #define _GNU_SOURCE 1
++  #include <stdio.h>
++  #include <stdlib.h>
++  #include <string.h>
++  #include <strings.h>
++  #include <unistd.h>
++  #include <time.h>
++  #include <signal.h>
++  #include <sys/types.h>
++  #include <sys/socket.h>
++  #include <sys/mman.h>
++  #include <sys/shm.h>
++  #include <sys/stat.h>
++  #include <fcntl.h>
++  #include <pthread.h>
++  #include <locale.h>
++  #include <wchar.h>
++  #include <netinet/in.h>
++  #include <arpa/inet.h>
++  #include <poll.h>
++  #include <syslog.h>
++'''
++
+ func_check_results = {}
+ foreach c : func_checks
+   func = c.get(0)
+@@ -2746,7 +2784,7 @@ foreach c : func_checks
+     continue
+   endif
+ 
+-  found = cc.has_function(func, args: test_c_args)
++  found = cc.has_function(func, args: test_c_args, prefix: default_func_prefix)
+ 
+   if not found
+     foreach dep : deps
+@@ -2754,7 +2792,7 @@ foreach c : func_checks
+         continue
+       endif
+       found = cc.has_function(func, args: test_c_args,
+-                              dependencies: [dep])
++                              dependencies: [dep], prefix: default_func_prefix)
+       if found
+         os_deps += dep
+         break
+@@ -2773,7 +2811,7 @@ foreach c : func_checks
+ endforeach
+ 
+ 
+-if cc.has_function('syslog', args: test_c_args) and \
++if cc.has_function('syslog', args: test_c_args, prefix: default_func_prefix) and \
+     cc.check_header('syslog.h', args: test_c_args)
+   cdata.set('HAVE_SYSLOG', 1)
+ endif

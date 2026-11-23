@@ -1,0 +1,40 @@
+Count the host arm's arena bytes through ArrayBuffer::Allocator::OnExternalBytes.
+
+On the host JS-engine arm no ArrayBuffer's bytes come from the isolate's
+allocator: each buffer is one contiguous guest run the device backend's arena
+owns, which is what makes it zero-copy for the host. node's allocator is still
+where `process.memoryUsage().arrayBuffers` comes from, so the shim reports
+those bytes to it -- +n when a run is taken by the C++ surface, -n when it goes
+back -- through the shim header's OnExternalBytes(delta) hook, whose base
+implementation is empty.
+
+NodeArrayBufferAllocator already keeps that count in total_mem_usage_, and
+already has the two methods that move it: RegisterPointer and
+UnregisterPointer, which take a pointer they never dereference. The override
+below reuses them, so the counter is moved by exactly the path node moves it
+by itself. Nothing is allocated and nothing is zero-filled; the previous shape
+(an AllocateUninitialized of the buffer's size, freed immediately) cost a real
+host allocation of every buffer's size on every buffer creation.
+
+Arm-neutral: on the mozjs arm the allocator supplies real bytes and the hook is
+never called.
+
+--- a/src/node_internals.h
++++ b/src/node_internals.h
+@@ -132,6 +132,16 @@
+   }
+   virtual void UnregisterPointer(void* data, size_t size) {
+     total_mem_usage_.fetch_sub(size, std::memory_order_relaxed);
++  }
++  // Bytes an ArrayBuffer holds that this allocator did not supply: the
++  // device backend's arena owns them on the host JS-engine arm. They are
++  // part of process.memoryUsage().arrayBuffers all the same, so they move
++  // the same counter, through the same two methods.
++  void OnExternalBytes(int64_t delta) override {
++    if (delta >= 0)
++      RegisterPointer(nullptr, static_cast<size_t>(delta));
++    else
++      UnregisterPointer(nullptr, static_cast<size_t>(-delta));
+   }
+ 
+   NodeArrayBufferAllocator* GetImpl() final { return this; }

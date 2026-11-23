@@ -1,0 +1,29 @@
+llhttp's api.c compiles a `#if defined(__wasm__)` block for its own
+JavaScript embedding: eight extern host callbacks (wasm_on_*) parked in an
+externally visible settings table, reachable only through llhttp_alloc(),
+which node never calls (node_http_parser.cc calls llhttp_init with its own
+settings). The table keeps the eight names alive through --gc-sections,
+and nothing defines them: unresolved env and GOT.func imports in node.
+node builds the guest as Linux (-D__linux__ in the recipe), so the block
+is compiled only for a wasm target that is not Linux.
+
+--- a/deps/llhttp/src/api.c
++++ b/deps/llhttp/src/api.c
+@@ -39,7 +39,7 @@
+ }
+ 
+ 
+-#if defined(__wasm__)
++#if defined(__wasm__) && !defined(__linux__)
+ 
+ extern int wasm_on_message_begin(llhttp_t * p);
+ extern int wasm_on_url(llhttp_t* p, const char* at, size_t length);
+@@ -78,7 +78,7 @@
+   free(parser);
+ }
+ 
+-#endif  // defined(__wasm__)
++#endif  // defined(__wasm__) && !defined(__linux__)
+ 
+ /* Some getters required to get stuff from the parser */
+ 

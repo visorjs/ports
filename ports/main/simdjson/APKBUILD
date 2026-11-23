@@ -1,0 +1,45 @@
+# Maintainer: visorjs <info@visorjs.com>
+pkgname=simdjson
+pkgver=4.2.4
+pkgrel=8
+pkgdesc="Parsing gigabytes of JSON per second"
+url="https://simdjson.org/"
+arch="wasm64"
+license="Apache-2.0 OR MIT"
+depends="musl>=1.2.6-r28 libcxx"
+depends_dev="$pkgname=$pkgver-r$pkgrel"
+subpackages="$pkgname-static $pkgname-dev"
+options="!check !strip !archcheck"
+source="https://github.com/simdjson/simdjson/archive/v$pkgver/simdjson-$pkgver.tar.gz"
+
+# cmake/samurai are baked into the toolchain image already.
+# SIMDJSON_EXCEPTIONS is off: it defaults on upstream, and this platform's
+# libc++abi carries no unwinder at all (built -D_LIBCXXABI_NO_EXCEPTIONS),
+# so the exception-throwing wrapper API must be compiled out rather than
+# left to build against a runtime that has no __cxa_throw.
+build() {
+	cmake -B builddir -G Ninja \
+		-DCMAKE_TOOLCHAIN_FILE=/usr/local/share/reactor/cmake/wasm64-reactor.cmake \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+		-DSIMDJSON_EXCEPTIONS=OFF \
+		-DBUILD_SHARED_LIBS=ON
+	cmake -B builddir-static -G Ninja \
+		-DCMAKE_TOOLCHAIN_FILE=/usr/local/share/reactor/cmake/wasm64-reactor.cmake \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+		-DSIMDJSON_EXCEPTIONS=OFF
+	cmake --build builddir
+	cmake --build builddir-static
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install builddir
+	DESTDIR="$pkgdir" cmake --install builddir-static
+}
+
+sha512sums="
+8a4c4b96c11f3b2b5345310ee759d989423e2484d5585056f57aa2786fed8806ac714a1ddff14da8c8bf34487ede78b9bf2f2348f4e197aa874f31fa8097b6e4  simdjson-4.2.4.tar.gz
+"

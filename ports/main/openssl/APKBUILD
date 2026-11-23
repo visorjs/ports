@@ -1,0 +1,117 @@
+# Maintainer: visorjs <info@visorjs.com>
+pkgname=openssl
+pkgver=3.5.7
+_abiver=${pkgver%.*.*}
+pkgrel=10
+pkgdesc="Toolkit for Transport Layer Security (TLS)"
+url="https://openssl.org"
+arch="wasm64"
+license="Apache-2.0"
+# The openssl package proper provides upstream's CLI (/usr/bin/openssl),
+# which depends on the two libraries (libcrypto and libssl) — the same
+# relationship upstream aports has.
+depends="libcrypto$_abiver libssl$_abiver musl>=1.2.6-r28"
+subpackages="$pkgname-libs-static $pkgname-dev
+	libcrypto$_abiver:_libcrypto libssl$_abiver:_libssl"
+options="!check !strip !archcheck"
+source="https://github.com/openssl/openssl/releases/download/openssl-$pkgver/openssl-$pkgver.tar.gz
+	20-reactor.conf
+	wasm-fixups.h"
+builddir="$srcdir/openssl-$pkgver"
+
+# Divergences from Alpine main/openssl, each one platform-forced:
+#   - No -doc: anything past it wants perl (pod2man for the man pages)
+#     which we do not need for the runtime package.
+#   - No -dbg: wasm objects are not ELF, so there is no split-debug
+#     step to package (the same reason `!strip` is set).
+#   - No -misc, no -fips: the perl scripts and the FIPS provider module
+#     are not required on this platform.
+#
+# Configure flags: the known-good wasm64 invocation for this toolchain,
+# which came from packages/ncrypto/wasm/Makefile's CONFIGURE_FLAGS — the
+# one place this platform's OpenSSL feature set had already been worked
+# out — and is reproduced here unchanged, no-shared included. OpenSSL's
+# own shared-library machinery is what no-shared turns off; the .so
+# modules below are linked by reactor-link from the static archives it
+# leaves behind, which is the only shape this platform links. The list
+# is provenance, not a build dependency: nothing in this recipe reads
+# anything from that package. It is also why this pins 3.5.7 (Alpine's)
+# rather than the 3.5.6 recorded in vendor/openssl-VERSION.txt.
+build() {
+	mkdir -p "$srcdir"/conf
+	cp "$srcdir"/20-reactor.conf "$srcdir"/conf/
+
+	OPENSSL_LOCAL_CONFIG_DIR="$srcdir"/conf \
+		CC="$CC" CXX="$CXX" \
+		AR=llvm-ar RANLIB=llvm-ranlib \
+		CFLAGS="-include $srcdir/wasm-fixups.h" \
+		CXXFLAGS="-include $srcdir/wasm-fixups.h" \
+		./Configure wasm64-reactor \
+			--prefix=/usr \
+			--libdir=lib \
+			--openssldir=/etc/ssl \
+			no-comp no-shared no-afalgeng enable-ssl-trace \
+			no-asm no-async no-dso \
+			no-dynamic-engine no-egd no-engine no-ktls \
+			no-module
+	make -j"$(nproc)" build_libs
+
+	"$LD" --entry-shape=shared --soname libcrypto.so.$_abiver \
+		-Wl,--whole-archive libcrypto.a -Wl,--no-whole-archive \
+		"$REACTOR_SYSROOT/lib/libc.so" -o libcrypto.so
+	"$LD" --entry-shape=shared --soname libssl.so.$_abiver \
+		-Wl,--whole-archive libssl.a -Wl,--no-whole-archive \
+		libcrypto.so "$REACTOR_SYSROOT/lib/libc.so" -o libssl.so
+
+	make -j"$(nproc)" apps/openssl
+}
+
+package() {
+	# Upstream's CLI binary. No c_rehash: aports removes it, and
+	# ca-certificates provides cmd:c_rehash.
+	install -D -m755 apps/openssl "$pkgdir"/usr/bin/openssl
+
+	# Configuration files and directories for OpenSSL
+	install -D -m644 apps/openssl.cnf "$pkgdir"/etc/ssl/openssl.cnf
+	install -D -m644 apps/ct_log_list.cnf "$pkgdir"/etc/ssl/ct_log_list.cnf
+	install -d "$pkgdir"/etc/ssl/certs "$pkgdir"/etc/ssl/private
+
+	# What upstream's `--prefix=/usr --libdir=lib` install lays down: the
+	# soname-versioned real file plus its development symlink.
+	install -D -m755 libcrypto.so "$pkgdir"/usr/lib/libcrypto.so.$_abiver
+	install -D -m755 libssl.so "$pkgdir"/usr/lib/libssl.so.$_abiver
+	ln -s libcrypto.so.$_abiver "$pkgdir"/usr/lib/libcrypto.so
+	ln -s libssl.so.$_abiver "$pkgdir"/usr/lib/libssl.so
+	# The public headers of *this* configuration (Configure generates
+	# configuration.h/opensslconf.h in the same include/openssl dir),
+	# so a dependent recipe compiles against the same OpenSSL it links.
+	# abuild's default dev() splits usr/include out into
+	# openssl-dev.
+	install -d "$pkgdir"/usr/include/openssl
+	install -m644 include/openssl/*.h "$pkgdir"/usr/include/openssl/
+	install -D -m644 exporters/libcrypto.pc "$pkgdir"/usr/lib/pkgconfig/libcrypto.pc
+	install -D -m644 exporters/libssl.pc "$pkgdir"/usr/lib/pkgconfig/libssl.pc
+	install -D -m644 exporters/openssl.pc "$pkgdir"/usr/lib/pkgconfig/openssl.pc
+	# Alpine's openssl-libs-static, same content and same name: the two
+	# archives Configure produced above, before they were linked into
+	# the shared modules.
+	install -D -m644 libcrypto.a "$pkgdir"/usr/lib/libcrypto.a
+	install -D -m644 libssl.a "$pkgdir"/usr/lib/libssl.a
+}
+
+_libcrypto() {
+	pkgdesc="Crypto library from openssl"
+	depends="musl>=1.2.6-r28"
+	amove etc
+	amove usr/lib/libcrypto.so.*
+}
+
+_libssl() {
+	pkgdesc="SSL shared library from openssl"
+	depends="musl>=1.2.6-r28 libcrypto$_abiver"
+	amove usr/lib/libssl.so.*
+}
+
+sha512sums="de5351d2d532e1a3908a738f7d8aae448d32bc60bdb24808c556a24bc37a3f53daedf12b5d432eeb8c235e16939d842f908332ede8a447ca103ad1c493c820d7  openssl-3.5.7.tar.gz
+38df4a935d696b7ccda2b492175bc59d67ba4615dd74e88f9393e4893fb7c3e12e3bc760744de65505fa8bbd486c3266a0bb40ce936c34e02c2af71a3ced591c  20-reactor.conf
+df4e92a58e1dcb0afa07e96da02a176cbb64790ef754f0ea84add85842c045e99b1c336b69e47fda0f2f9cb9908130c605f791dbc9c6c3ebbfcbb07f4b290290  wasm-fixups.h"

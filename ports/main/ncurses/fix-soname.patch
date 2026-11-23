@@ -1,0 +1,19 @@
+wasm-ld rejects the ",-stats,-lc" tail ncurses appends to -Wl,-soname.
+Only the linux*|gnu*|k*bsd*-gnu branch is reachable here (the recipe
+configures --host=$CARCH-alpine-linux-musl), so that is the only case
+patched. ncurses ships configure pre-generated and the recipe never
+re-runs autoconf, so patching configure -- rather than aclocal.m4's
+CF_SHARED_OPTS, where this text originates -- is the edit that takes
+effect. A version bump has to re-derive it from aclocal.m4.
+
+--- a/configure
++++ b/configure
+@@ -6817,7 +6817,7 @@
+ 		cf_cv_shared_soname='`basename $@`'
+ 	fi
+ 
+-		MK_SHARED_LIB='${CC} ${LDFLAGS} ${CFLAGS} -shared -Wl,-soname,'$cf_cv_shared_soname',-stats,-lc -o $@'
++		MK_SHARED_LIB='${CC} ${LDFLAGS} ${CFLAGS} -shared -Wl,-soname,'$cf_cv_shared_soname' -o $@'
+ 		;;
+ 	(mingw*msvc*)
+ 		cf_cv_shlib_version=msvcdll

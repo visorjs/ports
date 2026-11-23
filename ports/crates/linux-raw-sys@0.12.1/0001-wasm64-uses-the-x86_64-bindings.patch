@@ -1,0 +1,143 @@
+wasm64 takes the x86_64 bindings, which is the Linux ABI the visorjs
+kernel speaks on it.
+
+Every per-arch module is selected by an explicit target_arch list with no
+wasm64 arm, so on wasm64-visorjs-linux-musl `general`, `errno`, `ioctl` and
+the rest are configured out and the crate fails with `unresolved import
+crate::general`. rustix reaches it for every target_os = "linux".
+
+The kernel and @reactor/libc on wasm64 use x86_64 syscall numbering, the
+x86_64 struct stat and the x86_64 O_* / errno values (the libc crate's
+wasm64 arm is written from the same headers), so the x86_64 modules are
+the bindings, not an approximation of them. `char` is signed on wasm, so
+no_std's c_char joins the c_schar list. No other target moves.
+
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -37,6 +37,7 @@
+         target_arch = "x86",
+         target_arch = "x86_64",
+         target_arch = "xtensa",
++        target_arch = "wasm64",
+     ))]
+     pub type c_char = c_schar;
+ 
+@@ -1875,95 +1876,95 @@
+ #[path = "x86/xdp.rs"]
+ pub mod xdp;
+ #[cfg(feature = "auxvec")]
+-#[cfg(all(target_arch = "x86_64", target_pointer_width = "64"))]
++#[cfg(any(all(target_arch = "x86_64", target_pointer_width = "64"), target_arch = "wasm64"))]
+ #[path = "x86_64/auxvec.rs"]
+ pub mod auxvec;
+ #[cfg(feature = "bootparam")]
+-#[cfg(all(target_arch = "x86_64", target_pointer_width = "64"))]
++#[cfg(any(all(target_arch = "x86_64", target_pointer_width = "64"), target_arch = "wasm64"))]
+ #[path = "x86_64/bootparam.rs"]
+ pub mod bootparam;
+ #[cfg(feature = "btrfs")]
+-#[cfg(all(target_arch = "x86_64", target_pointer_width = "64"))]
++#[cfg(any(all(target_arch = "x86_64", target_pointer_width = "64"), target_arch = "wasm64"))]
+ #[path = "x86_64/btrfs.rs"]
+ pub mod btrfs;
+ #[cfg(feature = "elf_uapi")]
+-#[cfg(all(target_arch = "x86_64", target_pointer_width = "64"))]
++#[cfg(any(all(target_arch = "x86_64", target_pointer_width = "64"), target_arch = "wasm64"))]
+ #[path = "x86_64/elf_uapi.rs"]
+ pub mod elf_uapi;
+ #[cfg(feature = "errno")]
+-#[cfg(all(target_arch = "x86_64", target_pointer_width = "64"))]
++#[cfg(any(all(target_arch = "x86_64", target_pointer_width = "64"), target_arch = "wasm64"))]
+ #[path = "x86_64/errno.rs"]
+ pub mod errno;
+ #[cfg(feature = "general")]
+-#[cfg(all(target_arch = "x86_64", target_pointer_width = "64"))]
++#[cfg(any(all(target_arch = "x86_64", target_pointer_width = "64"), target_arch = "wasm64"))]
+ #[path = "x86_64/general.rs"]
+ pub mod general;
+ #[cfg(feature = "if_arp")]
+-#[cfg(all(target_arch = "x86_64", target_pointer_width = "64"))]
++#[cfg(any(all(target_arch = "x86_64", target_pointer_width = "64"), target_arch = "wasm64"))]
+ #[path = "x86_64/if_arp.rs"]
+ pub mod if_arp;
+ #[cfg(feature = "if_ether")]
+-#[cfg(all(target_arch = "x86_64", target_pointer_width = "64"))]
++#[cfg(any(all(target_arch = "x86_64", target_pointer_width = "64"), target_arch = "wasm64"))]
+ #[path = "x86_64/if_ether.rs"]
+ pub mod if_ether;
+ #[cfg(feature = "if_packet")]
+-#[cfg(all(target_arch = "x86_64", target_pointer_width = "64"))]
++#[cfg(any(all(target_arch = "x86_64", target_pointer_width = "64"), target_arch = "wasm64"))]
+ #[path = "x86_64/if_packet.rs"]
+ pub mod if_packet;
+ #[cfg(feature = "if_tun")]
+-#[cfg(all(target_arch = "x86_64", target_pointer_width = "64"))]
++#[cfg(any(all(target_arch = "x86_64", target_pointer_width = "64"), target_arch = "wasm64"))]
+ #[path = "x86_64/if_tun.rs"]
+ pub mod if_tun;
+ #[cfg(feature = "image")]
+-#[cfg(all(target_arch = "x86_64", target_pointer_width = "64"))]
++#[cfg(any(all(target_arch = "x86_64", target_pointer_width = "64"), target_arch = "wasm64"))]
+ #[path = "x86_64/image.rs"]
+ pub mod image;
+ #[cfg(feature = "io_uring")]
+-#[cfg(all(target_arch = "x86_64", target_pointer_width = "64"))]
++#[cfg(any(all(target_arch = "x86_64", target_pointer_width = "64"), target_arch = "wasm64"))]
+ #[path = "x86_64/io_uring.rs"]
+ pub mod io_uring;
+ #[cfg(feature = "ioctl")]
+-#[cfg(all(target_arch = "x86_64", target_pointer_width = "64"))]
++#[cfg(any(all(target_arch = "x86_64", target_pointer_width = "64"), target_arch = "wasm64"))]
+ #[path = "x86_64/ioctl.rs"]
+ pub mod ioctl;
+ #[cfg(feature = "landlock")]
+-#[cfg(all(target_arch = "x86_64", target_pointer_width = "64"))]
++#[cfg(any(all(target_arch = "x86_64", target_pointer_width = "64"), target_arch = "wasm64"))]
+ #[path = "x86_64/landlock.rs"]
+ pub mod landlock;
+ #[cfg(feature = "loop_device")]
+-#[cfg(all(target_arch = "x86_64", target_pointer_width = "64"))]
++#[cfg(any(all(target_arch = "x86_64", target_pointer_width = "64"), target_arch = "wasm64"))]
+ #[path = "x86_64/loop_device.rs"]
+ pub mod loop_device;
+ #[cfg(feature = "mempolicy")]
+-#[cfg(all(target_arch = "x86_64", target_pointer_width = "64"))]
++#[cfg(any(all(target_arch = "x86_64", target_pointer_width = "64"), target_arch = "wasm64"))]
+ #[path = "x86_64/mempolicy.rs"]
+ pub mod mempolicy;
+ #[cfg(feature = "net")]
+-#[cfg(all(target_arch = "x86_64", target_pointer_width = "64"))]
++#[cfg(any(all(target_arch = "x86_64", target_pointer_width = "64"), target_arch = "wasm64"))]
+ #[path = "x86_64/net.rs"]
+ pub mod net;
+ #[cfg(feature = "netlink")]
+-#[cfg(all(target_arch = "x86_64", target_pointer_width = "64"))]
++#[cfg(any(all(target_arch = "x86_64", target_pointer_width = "64"), target_arch = "wasm64"))]
+ #[path = "x86_64/netlink.rs"]
+ pub mod netlink;
+ #[cfg(feature = "prctl")]
+-#[cfg(all(target_arch = "x86_64", target_pointer_width = "64"))]
++#[cfg(any(all(target_arch = "x86_64", target_pointer_width = "64"), target_arch = "wasm64"))]
+ #[path = "x86_64/prctl.rs"]
+ pub mod prctl;
+ #[cfg(feature = "ptrace")]
+-#[cfg(all(target_arch = "x86_64", target_pointer_width = "64"))]
++#[cfg(any(all(target_arch = "x86_64", target_pointer_width = "64"), target_arch = "wasm64"))]
+ #[path = "x86_64/ptrace.rs"]
+ pub mod ptrace;
+ #[cfg(feature = "system")]
+-#[cfg(all(target_arch = "x86_64", target_pointer_width = "64"))]
++#[cfg(any(all(target_arch = "x86_64", target_pointer_width = "64"), target_arch = "wasm64"))]
+ #[path = "x86_64/system.rs"]
+ pub mod system;
+ #[cfg(feature = "vm_sockets")]
+-#[cfg(all(target_arch = "x86_64", target_pointer_width = "64"))]
++#[cfg(any(all(target_arch = "x86_64", target_pointer_width = "64"), target_arch = "wasm64"))]
+ #[path = "x86_64/vm_sockets.rs"]
+ pub mod vm_sockets;
+ #[cfg(feature = "xdp")]
+-#[cfg(all(target_arch = "x86_64", target_pointer_width = "64"))]
++#[cfg(any(all(target_arch = "x86_64", target_pointer_width = "64"), target_arch = "wasm64"))]
+ #[path = "x86_64/xdp.rs"]
+ pub mod xdp;
+ #[cfg(feature = "auxvec")]

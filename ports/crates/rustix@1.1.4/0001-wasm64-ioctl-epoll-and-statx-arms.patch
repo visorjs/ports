@@ -1,0 +1,102 @@
+wasm64 gets the generic ioctl encoding, the packed epoll event and the libc
+crate's own statx definitions, which is the x86_64 Linux ABI the visorjs
+kernel speaks on it and the musl the libc crate describes there.
+
+  * ioctl/linux.rs selects its opcode constants from an explicit
+    target_arch list with no wasm64 arm, so `consts` is configured out and
+    the crate does not compile (`unresolved import consts`). The kernel
+    encodes ioctls the asm-generic way, as x86_64 does.
+  * event/epoll.rs packs `Event` for the libc backend on x86_64 only, and
+    the backend casts `Event` to `libc::epoll_event`, which the libc
+    crate's wasm64 arm declares packed (sys/epoll.h). Without the arm the
+    two disagree on size (16 against 12) and every epoll_wait past the
+    first event is read at the wrong offset, with no error.
+  * backend/libc/c.rs re-exports linux-raw-sys's STATX_* for musl targets
+    whose libc crate lacks them, and names loongarch64 as the musl target
+    that has them. The libc crate's wasm64 arm is in the same recent-musl
+    group as loongarch64 (its build.rs), so both sets are in scope and
+    every STATX_* is an ambiguous glob import, a hard error.
+  * backend/libc/fs/types.rs offers AtFlags::STATX_{SYNC_AS_STAT,
+    FORCE_SYNC,DONT_SYNC} on glibc only, from the libc crate's
+    AT_STATX_*, which that crate also defines for recent musl, wasm64
+    included. The linux_raw backend every other Linux target takes has
+    them, so crates call them unconditionally on target_os = "linux"
+    (oxc_resolver's metadata does), and without the arm they do not
+    compile.
+
+No other target moves.
+
+--- a/src/backend/libc/c.rs
++++ b/src/backend/libc/c.rs
+@@ -482,7 +482,8 @@
+     not(any(
+         target_os = "emscripten",
+         target_env = "gnu",
+-        all(target_arch = "loongarch64", target_env = "musl")
++        all(target_arch = "loongarch64", target_env = "musl"),
++        all(target_arch = "wasm64", target_env = "musl")
+     ))
+ ))]
+ mod statx_flags {
+@@ -506,7 +507,8 @@
+         target_os = "android",
+         target_os = "emscripten",
+         target_env = "gnu",
+-        all(target_arch = "loongarch64", target_env = "musl")
++        all(target_arch = "loongarch64", target_env = "musl"),
++        all(target_arch = "wasm64", target_env = "musl")
+     ))
+ ))]
+ pub(crate) use statx_flags::*;
+--- a/src/backend/libc/fs/types.rs
++++ b/src/backend/libc/fs/types.rs
+@@ -67,15 +67,24 @@
+         const RESOLVE_BENEATH = bitcast!(c::AT_RESOLVE_BENEATH);
+ 
+         /// `AT_STATX_SYNC_AS_STAT`
+-        #[cfg(all(target_os = "linux", target_env = "gnu"))]
++        #[cfg(any(
++            all(target_os = "linux", target_env = "gnu"),
++            all(target_os = "linux", target_arch = "wasm64", target_env = "musl")
++        ))]
+         const STATX_SYNC_AS_STAT = bitcast!(c::AT_STATX_SYNC_AS_STAT);
+ 
+         /// `AT_STATX_FORCE_SYNC`
+-        #[cfg(all(target_os = "linux", target_env = "gnu"))]
++        #[cfg(any(
++            all(target_os = "linux", target_env = "gnu"),
++            all(target_os = "linux", target_arch = "wasm64", target_env = "musl")
++        ))]
+         const STATX_FORCE_SYNC = bitcast!(c::AT_STATX_FORCE_SYNC);
+ 
+         /// `AT_STATX_DONT_SYNC`
+-        #[cfg(all(target_os = "linux", target_env = "gnu"))]
++        #[cfg(any(
++            all(target_os = "linux", target_env = "gnu"),
++            all(target_os = "linux", target_arch = "wasm64", target_env = "musl")
++        ))]
+         const STATX_DONT_SYNC = bitcast!(c::AT_STATX_DONT_SYNC);
+ 
+         /// <https://docs.rs/bitflags/*/bitflags/#externally-defined-flags>
+--- a/src/event/epoll.rs
++++ b/src/event/epoll.rs
+@@ -229,6 +229,7 @@
+                 not(target_os = "android"),
+             ),
+             target_arch = "x86_64",
++            target_arch = "wasm64",
+         )
+     ),
+     repr(packed)
+--- a/src/ioctl/linux.rs
++++ b/src/ioctl/linux.rs
+@@ -51,7 +51,8 @@
+     target_arch = "riscv32",
+     target_arch = "riscv64",
+     target_arch = "loongarch64",
+-    target_arch = "csky"
++    target_arch = "csky",
++    target_arch = "wasm64"
+ ))]
+ mod consts {
+     use super::Opcode;

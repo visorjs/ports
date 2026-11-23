@@ -1,0 +1,18 @@
+libuv reads the same architecture answer v8config.h forces on this build,
+-D__i386__=1, and picks the x86 PAUSE instruction for uv__cpu_relax():
+`wasm-ld: error: ld-temp.o <inline asm>:1:2: invalid instruction / rep; nop`.
+Nothing else in deps/uv reads it -- its struct layouts follow __linux__, which
+stays -- so the define is undone for this target alone. It goes in cflags_c
+rather than cflags because gyp's ninja rule spells the compile line
+$cflags $cflags_c and the environment's CFLAGS are prepended to the second.
+
+--- a/deps/uv/uv.gyp
++++ b/deps/uv/uv.gyp
+@@ -156,6 +156,7 @@
+       'target_name': 'libuv',
+       'toolsets': ['host', 'target'],
+       'type': '<(uv_library)',
++      'cflags_c': [ '-U__i386__' ],
+       'include_dirs': [
+         'include',
+         'src/',

@@ -1,0 +1,90 @@
+# Maintainer: visorjs <info@visorjs.com>
+pkgname=linux-headers
+pkgver=7.1.5
+# NOTE: Follows Greg's stable Linux releases, see kernel.org
+_kernver=${pkgver%.*}
+pkgrel=1
+pkgdesc="Linux system headers"
+url="https://kernel.org/"
+arch="wasm64"
+license="GPL-2.0-only"
+makedepends="perl"
+options="!check !strip !archcheck"
+source="https://kernel.org/pub/linux/kernel/v${pkgver%%.*}.x/linux-$_kernver.tar.xz
+	revert-broken-uapi.patch
+	0003-remove-inclusion-of-sysinfo.h-in-kernel.h.patch
+	bitsperlong-derive-word-size-from-the-compiler.patch
+	"
+if [ "${pkgver%.0}" = "$pkgver" ]; then
+	source="
+		patch-$pkgver.patch.xz::https://cdn.kernel.org/pub/linux/kernel/v${pkgver%%.*}.x/patch-$pkgver.xz
+		$source
+		"
+fi
+builddir="$srcdir/linux-$_kernver"
+
+# This mirrors aports' main/linux-headers, which is what supplies the
+# kernel UAPI headers (`linux/*`, `asm/*`, `mtd/*`, …) that musl does not
+# ship and that upstream busybox declares as `makedepends_host`. musl's own
+# `bits/kd.h` and `bits/vt.h` include `linux/kd.h` and `linux/vt.h`, so a
+# sysroot without these is incomplete rather than this being one package's
+# unusual demand.
+#
+# Divergences from aports, both consequences of the target not being a
+# Linux architecture:
+#   - `_carch` maps wasm64 to x86. The UAPI `asm/` subtree is where the
+#     syscall numbers live, and this platform's are x86_64's: musl's
+#     `bits/syscall.h` here defines __NR_read 0 / __NR_write 1, so
+#     `asm/unistd.h` has to agree or an applet reaching for a __NR_ that
+#     musl does not wrap (busybox's ionice, __NR_ioprio_get) issues a
+#     different syscall than the one it names. x86's asm/unistd.h keys on
+#     __i386__ and falls through to the 64-bit table, which is the one
+#     that matches.
+#   - One patch of our own, on top of aports' two: x86's
+#     `asm/bitsperlong.h` derives the word size from __x86_64__ alone and
+#     otherwise says 32, and a wasm64 compile defines neither __i386__ nor
+#     __x86_64__ while being LP64. The patch drops that branch so
+#     asm-generic's own __SIZEOF_LONG__ path answers instead — upstream's
+#     documented modern spelling, and identical to today's answer on a
+#     real x86_64 toolchain.
+#
+# The `arch="all"` of upstream becomes this tree's single wasm64: the
+# package is architecture-specific for exactly the reason above, and this
+# tree has one architecture.
+
+_carch="$CARCH"
+case "$_carch" in
+wasm64*) _carch="x86" ;;
+aarch64*) _carch="arm64" ;;
+arm*) _carch="arm" ;;
+mips*) _carch="mips" ;;
+s390*) _carch="s390" ;;
+ppc*) _carch="powerpc" ;;
+riscv*) _carch="riscv" ;;
+loongarch*) _carch="loongarch" ;;
+esac
+
+build() {
+	# Upstream's `headers` target compiles only scripts/unifdef, with
+	# HOSTCC — nothing here is built for the target, which is why this
+	# recipe never touches $CC.
+	make headers ARCH="$_carch"
+}
+
+package() {
+	# This recipe's pkgdir is a Docker volume mountpoint, so abuild is run
+	# with -K and never clears it (ports/build.sh, docker-compose.yml).
+	rm -rf "${pkgdir:?}"/*
+	mkdir -p "$pkgdir"/usr/
+	cp -a usr/include/ "$pkgdir"/usr/include/
+
+	msg "purging non header files.."
+	find "$pkgdir"/usr/include/ ! -iname "*.h" -type f -exec rm -v {} \+
+}
+sha512sums="
+fc3cc487e2a633b9c2f0122a2dcdc3e515b4ad433c72372d7cf489b2c60ac186bc6b5ba9a1a7ea40683a5387c0300349ca6873d2938dc4ed2292e77f1743e01f  patch-7.1.5.patch.xz
+d4d9c45261813559341c67ea53d4a47f5a04d1ad15e3c2b8222a09b5483380d2bfd31b8c675e144db2eb91f560d6cb28f66187a5ea4f24f6dfb82a4ad48064cc  linux-7.1.tar.xz
+c1fc9a8a0b42dacad51ceb13785f54dfce89369fe082e6457b80a1f75b02704415d397b5df48ca3fdf361ec8c1b72c196b5033bca0325e39d026bcc357d89452  revert-broken-uapi.patch
+607c074d72aca88fea9ecdbd62198d8f7857daca75e5d027966e0a9997338d6ac8ce0a1e9114b19232b390751d05acca09e28b0cfad2a12d5942f5575a9f4684  0003-remove-inclusion-of-sysinfo.h-in-kernel.h.patch
+6ce2437ec1dc883bdab7dfd498b70088f66754a8a872caddf1743c38a00a2eba6676e1fcc3ad4f1ce74c43aee8ac2448052b31c2cc7446834e594506615b0176  bitsperlong-derive-word-size-from-the-compiler.patch
+"

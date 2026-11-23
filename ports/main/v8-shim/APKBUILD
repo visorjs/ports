@@ -1,0 +1,42 @@
+# Maintainer: visorjs <info@visorjs.com>
+pkgname=v8-shim
+pkgver=1.0.0
+pkgrel=98
+pkgdesc="V8 C++ API implemented on Mozilla SpiderMonkey"
+url="https://spidermonkey.dev/"
+arch="wasm64"
+# The shim descends from Mozilla's SpiderShim (MIT, (c) Mozilla Foundation)
+# by way of github.com/wasmerio/spidershim; include/ declares V8's public API
+# and carries the V8 project's BSD-3-Clause notices. See
+# packages/v8-shim/LICENSE.
+license="LicenseRef-visorjs-proprietary AND BSD-3-Clause"
+depends="musl libcxx"
+depends_dev="$pkgname=$pkgver-r$pkgrel"
+makedepends=""
+subpackages="$pkgname-dev $pkgname-static"
+options="!check !strip !archcheck"
+replaces="spidershim"
+builddir="$srcdir"
+
+# The built shim, in the tree. Nothing is compiled by this recipe: the shim
+# is built by packages/v8-shim/wasm/Makefile — the same dist/ the conformance
+# suite runs against — so what a guest `apk add v8-shim` installs is the very
+# archive the suite passed on, not a second compile of the same sources
+# against a separately staged SpiderMonkey. This mirrors how the nodejs
+# recipe reaches into /work/packages for its shim sources.
+_dist="/work/packages/v8-shim/wasm/dist"
+
+_build_hint="npm run build:wasm --workspace=@reactor/v8-shim"
+
+build() {
+	test -f "$_dist"/lib/libv8_spidermonkey.a \
+		|| die "no $_dist/lib/libv8_spidermonkey.a — build it with \`$_build_hint\`"
+	test -f "$_dist"/include/v8.h \
+		|| die "no V8 headers in $_dist/include — build it with \`$_build_hint\`"
+}
+
+package() {
+	install -d "$pkgdir"/usr/lib "$pkgdir"/usr/include
+	install -m 644 "$_dist"/lib/libv8_spidermonkey.a "$pkgdir"/usr/lib/
+	cp -r "$_dist"/include/. "$pkgdir"/usr/include/
+}

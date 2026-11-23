@@ -1,0 +1,80 @@
+# Maintainer: visorjs <info@visorjs.com>
+pkgname=mpdecimal
+pkgver=4.0.1
+pkgrel=8
+pkgdesc="complete implementation of the General Decimal Arithmetic Specification"
+url="https://www.bytereef.org/mpdecimal/index.html"
+arch="wasm64"
+license="BSD-2-Clause"
+# aports relies on tracedeps to attribute libmpdec.so.4's runtime
+# libraries; the musl floor, a version tracedeps cannot add, is named.
+# Only musl: --disable-cxx below means nothing here links libc++.
+depends="musl>=1.2.6-r28"
+subpackages="$pkgname-doc $pkgname-dev"
+options="!check !strip !archcheck"
+source="https://www.bytereef.org/software/mpdecimal/releases/mpdecimal-$pkgver.tar.gz"
+
+# configure.ac's non-Windows, non-Darwin branch names libmpdec.so.4 as the
+# soname and libmpdec.so.4.0.1 as the real file, and links with
+# -Wl,-soname,libmpdec.so.4; reactor-cc reads that flag and hands the soname
+# to reactor-link, so upstream's own link line carries the versioning.
+
+build() {
+	# wasm64: -DNDEBUG. upstream's `case $CC in *gcc* | *clang* ...)`
+	# sets MPD_OPT="-DNDEBUG -O2"; $CC here is an absolute path to
+	# reactor-cc, which matches no pattern in that case, so it falls
+	# through to a bare -O2 and libmpdec would ship with assert() live.
+	# Supplied directly to keep parity with what aports builds. The
+	# same case's -pthread is deliberately not reproduced: pthread is
+	# used only by the test drivers, which options="!check" drops, and
+	# this target gets its atomics from the toolchain's own -matomics.
+	export CFLAGS="$CFLAGS -DNDEBUG"
+
+	# aports passes --host=$CHOST; abuild has no wasm64 entry in its
+	# arch-to-host-spec table, so the triple is spelled out, as every
+	# recipe in this tree does.
+	#
+	# --disable-cxx is a wasm64 divergence. libmpdec++'s decimal.hh /
+	# decimal.cc are an exception-based API — ValueError, MallocError
+	# and friends are thrown, not returned — and this platform's
+	# libc++abi is built -D_LIBCXXABI_NO_EXCEPTIONS with no unwinder at
+	# all, so `throw` cannot be compiled (the same constraint that
+	# drops pzstd from the zstd recipe and the C++ sources from
+	# nghttp2's). libmpdec++.so.4, libmpdec++.a, decimal.hh and
+	# libmpdec++.pc are therefore not shipped. The C library —
+	# libmpdec.so.4, libmpdec.a, mpdecimal.h, libmpdec.pc — is, and
+	# that is the whole of what CPython's --with-system-libmpdec
+	# consumes.
+	#
+	# AR/RANLIB: configure's AC_CHECK_TOOL/AC_PROG_RANLIB would resolve
+	# the build container's native aarch64 binutils, which cannot index
+	# wasm objects; the LLVM tools every other recipe here archives
+	# with are named instead.
+	#
+	# No ac_cv_* cache variables are needed. mpdecimal's probes are
+	# either compile-only (AC_CHECK_SIZEOF, AC_CHECK_TYPE, header
+	# checks) or AC_LINK_IFELSE bodies with real code rather than
+	# autoconf's `char f (void);` shape, so wasm-ld has no signature
+	# mismatch to reject; the two x86 inline-assembly probes fail on
+	# their own, as they should, and the one AC_RUN_IFELSE (the glibc
+	# _FORTIFY_SOURCE/memmove bug) has a cross-compilation branch that
+	# leaves the define unset. sizeof(size_t)==8 plus __uint128_t gives
+	# MACHINE=uint128, which is what aports gets on every 64-bit
+	# non-x86 arch.
+	./configure \
+		--build=$CBUILD \
+		--host=$CARCH-alpine-linux-musl \
+		--prefix=/usr \
+		--disable-cxx \
+		AR=llvm-ar \
+		RANLIB=llvm-ranlib
+	make
+}
+
+package() {
+	make install DESTDIR="$pkgdir"
+}
+
+sha512sums="
+431fa8ab90d6b8cdecc38b1618fd89d040185dec3c1150203e20f40f10a16160058f6b8abddd000f6ecb74f4dc42d9fef8111444f1496ab34c34f6b814ed32b7  mpdecimal-4.0.1.tar.gz
+"
